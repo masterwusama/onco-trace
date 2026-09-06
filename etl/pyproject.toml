@@ -1,0 +1,24 @@
+[project]
+name = "onco-etl"
+version = "0.1.0"
+description = "onco-trace 的源探针与采集层：只通过 MySQL 表结构与后端对话"
+requires-python = ">=3.10"
+# 全部本机已装，不需要 pip install。
+# requests/lxml/bs4/pandas 是给 B2 之后的解析用的：GBD 与 SEER 的 CSV 要 pandas，
+# Cancer Stat Facts 与 PDQ 是 HTML 要 bs4，可达性探针只用 requests。
+dependencies = [
+    "SQLAlchemy>=2.0.51",
+    "PyMySQL>=1.2.0",
+    "requests>=2.28",
+    "certifi",
+    "lxml>=4.9",
+    "beautifulsoup4>=4.12",
+    "pandas>=2.0",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["onco_etl*"]
