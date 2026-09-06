@@ -46,25 +46,107 @@ SOURCES: tuple[Source, ...] = (
         source_type="ontology",
         dimensions=("identity",),
         home_url="https://mondo.monarchinitiative.org/",
-        download_url="https://purl.obolibrary.org/obo/mondo.json",
+        download_url="https://purl.obolibrary.org/obo/mondo.obo",
         license="CC BY 4.0",
-        legal_note="OBO Foundry 公开发布，CC BY 4.0 需署名；文件体量大，探针先确认是否有 base/精简版可用",
+        legal_note="OBO Foundry 公开发布，CC BY 4.0 需署名；purl 会 302 到 GitHub release asset，"
+        "下载要走代理时重试逻辑在 fetch.py 里",
         fetch_mode="quarterly",
         reliability="high",
-        evidence="设计阶段未实测。20 病的 ICD-10/MeSH/OMIM/Orphanet/EFO 交叉引用完整度是 B2 的判据",
+        evidence="探针实测（releases/2026-09-01，.obo 53134854 字节 / 63278 个 term）："
+        "mondo.json 107586061 字节也可达，mondo-base.json 已 404；取 .obo——体量减半且能逐行"
+        "流式解析。原判据「用 ICD-10 xref 找 18 病的主条目」被推翻：MONDO 没有裸 ICD10: 前缀"
+        "（只有 ICD10CM 2142 行 / ICD10WHO 209 行 / ICD9 5658 行），且挂 ICD10CM:C34 的是 "
+        "grouping 父类 respiratory system cancer 而不是 lung cancer，按 ICD-10 命中会稳定落到"
+        "上一层分类词。改按 ICD-9 命中能 18/18，但捞到的是 bronchus cancer / anal canal cancer "
+        "这类亚部位 term（合计 145 个，正好当器官与组织学下钻的子节点）——疾病主条目一个 ICD 码"
+        "都不带，colorectal cancer 与 non-Hodgkin lymphoma 皆如此，所以主条目只能在 targets.py "
+        "里声明，探针改为校验声明。18 个主条目 xref 实测：NCIT 18/18、UMLS 17/18（缺 uterus）、"
+        "MESH 7/18、EFO 5/18。disease_has_location→UBERON 全库仅 775 行、disease_has_feature→HP "
+        "仅 819 行（约 1%），当不了器官树或症状维的主源",
     ),
     Source(
         code="icdo3_seer",
-        name="ICD-O-3 拓扑与形态码表（SEER 镜像）",
+        name="ICD-O-3 Site Recode 与形态学码表（SEER）",
         org="NCI / SEER",
         source_type="code_table",
         dimensions=("anatomy", "histology"),
         home_url="https://seer.cancer.gov/icd-o-3/",
+        download_url="https://seer.cancer.gov/icd-o-3/sitetype.icdo3.d20220429.xlsx",
         license="US Government work",
         legal_note="美国政府作品可自由使用，要求引用 SEER；ICD-O 本体 WHO 版权，统计用途允许",
-        fetch_mode="once",
+        fetch_mode="annual",
         reliability="high",
-        evidence="器官树与 ICD-10↔ICD-O-3 crosswalk 的挂载依据；探针要确认码表是否可直接下载而非仅在线查询",
+        evidence="探针实测（d20220429 版，xlsx 451875 字节 / 12496 行）：82 个 site recode"
+        "（器官级，如 C160-C166,C168-C169 = STOMACH、C340-C343,C348-C349 = LUNG & BRONCHUS）"
+        "展开出 332 个拓扑码，去重后 806 个 histology/behavior 码，一个文件同时覆盖 anatomy 与 "
+        "histology 两维；18 病 100% 落到 site recode 分组，判据通过。"
+        "SEER 不托管完整 ICD-O-3 Topography 表，亚部位名（贲门/胃窦/胃体）不在其中——"
+        "那要 NCIt 的 obo（248 MB 且只能走代理），对 18 病的站不划算，"
+        "作为已知缺口接受，器官树做到器官级两级；亚部位下钻改用 MONDO 的 145 个 ICD-9 亚部位 term",
+    ),
+    Source(
+        code="icdo32_naaccr",
+        name="ICD-O-3.2 Morphology 主文件（NAACCR 镜像）",
+        org="NAACCR / WHO-IARC",
+        source_type="code_table",
+        dimensions=("histology",),
+        home_url="https://www.naaccr.org/icdo3/",
+        download_url="https://www.naaccr.org/wp-content/uploads/2020/10/"
+        "Copy-of-ICD-O-3.2_MFin_17042019_web.xls",
+        license="ICD-O-3.2 WHO/IARC，NAACCR 免费镜像",
+        legal_note="WHO 拥有 ICD-O 版权，NAACCR 镜像供肿瘤登记用途；再发布前要确认 WHO 条款。"
+        ".xls 老格式需 xlrd；同页另有 Histology3_vNN 年度更新表，属独立 dataset_code",
+        fetch_mode="annual",
+        reliability="high",
+        evidence="探针实测：464896 字节，单 sheet 'ICD-O-3.2 Morphology'，列为 "
+        "ICDO3.2/Level/Term/Code reference/obs/See also/See note/Includes/Excludes/Other text，"
+        "术语分 Preferred 与 Synonym 两级，比 SEER 的扁平描述细；不含 Topography 表",
+    ),
+    Source(
+        code="mesh",
+        name="MeSH 描述符全量（NLM）",
+        org="NLM / NIH",
+        source_type="code_table",
+        dimensions=("identity", "literature"),
+        home_url="https://www.nlm.nih.gov/mesh/meshhome.html",
+        download_url="https://nlmpubs.nlm.nih.gov/projects/mesh/MESH_FILES/xmlmesh/desc2026.xml",
+        license="US Government work，NLM 免费分发",
+        legal_note="美国政府作品，NLM 要求引用；年度发布，desc<year>.xml 随年份改名，"
+        "URL 里的 2026 需要跟着换，不能写死在调度里",
+        fetch_mode="annual",
+        reliability="high",
+        evidence="B2 实测加进来的源，起因是 MONDO 只能给 7/18 个主条目提供 MESH xref，"
+        "而 B5 的 Europe PMC 检索要靠 MeSH 主题词才有查准率。探针实测该 URL 直连 200、"
+        "text/xml、312952703 字节（约 298 MiB）；同源另两个路径 "
+        "projects/mesh/ftp/xmlmesh/desc2026.xml 返回 200 但是 text/html 外壳（200≠数据），"
+        "www.nlm.nih.gov/mesh/ftp/... 直接 404。体量大但一年只下一次，"
+        "而且直连可达，不像 NCIt 要依赖代理",
+    ),
+    Source(
+        code="ncit",
+        name="NCI Thesaurus（NCIt）",
+        org="NCI / EVS",
+        source_type="ontology",
+        dimensions=("identity", "anatomy"),
+        home_url="https://ncithesaurus.nci.nih.gov/",
+        download_url="https://purl.obolibrary.org/obo/ncit.obo",
+        license="CC BY 4.0（NCIt 本体）",
+        legal_note="NCIt 以 CC BY 4.0 发布需署名；部分术语源自 WHO/ICD-O 等第三方，"
+        "再发布前要按 NCIt 的版权页逐项确认，不能整库当成单一许可",
+        fetch_mode="quarterly",
+        reliability="high",
+        evidence="B2 实测加进来的源：MONDO 的 18 个主条目 xref 里 NCIT 是唯一 18/18 齐备的"
+        "（UMLS 17/18、MESH 7/18、EFO 5/18），所以跨源枢纽应该落在 NCIt 而不是 MONDO 上，"
+        "NCIt 自带 MeSH/ICD-O-3/ICD-10/EFO 交叉引用，一次能补齐三个缺口。"
+        "取数链路实测：purl 302 → github.com/ncit-obo-org/ncit-obo-edition/releases/"
+        "latest/download/ncit.obo → release-assets.githubusercontent.com，直连三连均 200、"
+        "application/octet-stream、248162694 字节（约 237 MiB）、618–1376ms，"
+        "走代理同样 200 但要 3005ms——直连可用且更快，不需要代理兜底。"
+        "两个要留意的地方：URL 里的 latest 不是固定版本，upstream_version 只能从文件头"
+        " data-version 取（实测 releases/2026-03-19，owl:versionInfo 26.02d）；"
+        "而这个 OBO Edition 比 NCIt 主版本慢约半年，追新术语要回到 NCI 自己的分发渠道。"
+        "NCI 自家 evs.nci.nih.gov/ftp1/NCI_Thesaurus/ 及其 archive 下的 OWL.zip "
+        "均返回 200 但 content-type 是 text/html、只有 2873 字节，是外壳不是数据，已排除",
     ),
     # ---- 症状维（已知最弱的一环，四个源并列试） ----
     Source(

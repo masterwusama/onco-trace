@@ -14,19 +14,27 @@
 
 ```
 18 个恶性肿瘤基准   etl/onco_etl/targets.py
-16 个候选源登记     etl/onco_etl/sources.py   →  MySQL db_ot.source
+19 个候选源登记     etl/onco_etl/sources.py   →  MySQL db_ot.source
 可达性探针          ops\etl.ps1 probe-reach   →  MySQL db_ot.source_probe_log
+专项覆盖度探针      ops\etl.ps1 probe         →  MySQL db_ot.source_probe_log
 ```
 
-16 个源全部可达（13 个直连、3 个需代理）。已确认的硬结论：症状维在常见上皮癌上
-**没有任何公开机器可读源可用**，HPO/Orphanet/NCIt 实测覆盖见
+19 个源全部可达（17 个直连、2 个需代理）。已过出口判据的两维：
+
+- **器官树**——SEER 的 ICD-O-3 Site Recode 码表一份文件同时供 anatomy 与 histology：
+  82 个 site recode / 332 个拓扑码 / 806 个形态学码，18 病 18/18 挂载到器官级分组。
+- **ID 主干**——MONDO 18 个疾病主条目全部解析通过，跨源枢纽定为 NCIt
+  （主条目的 NCIT xref 18/18；MONDO 自带的 MESH 只有 7/18、EFO 5/18，带不动文献与 GWAS 两维）。
+
+已确认的硬结论：症状维在常见上皮癌上**没有任何公开机器可读源可用**——MONDO 的
+UBERON 定位与 HP 症状注释各只有约 1% 覆盖，HPO/Orphanet/NCIt 的实测覆盖见
 [docs/数据源探针计划.md](docs/数据源探针计划.md)。这也是 P0 必须先跑探针、不先建表的原因。
 
 ## 架构
 
 ```
 ┌─ 采集层 etl/onco_etl/ ───────────┐   ┌─ 服务层（待建）─────────────────┐
-│ sources.py   16 个候选源登记表    │   │ FastAPI :8000                   │
+│ sources.py   19 个候选源登记表    │   │ FastAPI :8000                   │
 │ targets.py   18 病基准清单        │→MySQL→│  /api/*        查询与反查     │
 │ fetch.py     直连→代理三态取数    │ db_ot │  /             托管前端 dist  │
 │ raw.py       data/raw 归档+sha256 │   │ MySQL db_ot (localhost:3306)    │
@@ -46,16 +54,19 @@ python db/tests/run.py apply db/schema.sql
 python db/tests/run.py migrate
 ops\etl.ps1 seed-sources
 ops\etl.ps1 probe-reach
+ops\etl.ps1 probe             # 专项覆盖度探针，不带 --code 就是全跑
 ```
 
-依赖本机已装（SQLAlchemy、PyMySQL、requests、certifi、lxml、bs4、pandas），不需要 pip install。
+依赖本机已装（SQLAlchemy、PyMySQL、requests、certifi、lxml、bs4、pandas、openpyxl），不需要 pip install。
 
 ## 常用命令
 
 ```powershell
 python db/tests/run.py status            # 表行数 + legal_note 门禁
-ops\etl.ps1 probe-reach --code mondo     # 只探指定源
-ops\etl.ps1 probe-status                 # 每源最近一次裁定
+ops\etl.ps1 probe-reach --code mondo     # 只探指定源的可达性
+ops\etl.ps1 probe --list                 # 有哪些专项探针
+ops\etl.ps1 probe --code mondo --offline # 用 data/raw 归档离线重放，不重新下载
+ops\etl.ps1 probe-status                 # 每源每份数据集最近一次裁定
 ops\etl.ps1 status                       # 库现状速览
 ```
 

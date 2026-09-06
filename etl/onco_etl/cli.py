@@ -1,9 +1,16 @@
 """CLI：`python -m onco_etl <subcommand>`，必须在 etl/ 目录下跑（ops\\etl.ps1 已经替你 cd）。
 
     seed-sources [--dry-run]        把 sources.py 的候选源写进 source 表，拒绝空 legal_note
-    probe-reach [--code X] [--all]  可达性探针：直连/代理三态 + HTTP 状态，写 source_probe_log
-    probe-status                    每个源最近一次探针的裁定，P0 覆盖度矩阵的雏形
+    probe-reach [--code X] [--all]  可达性探针：直连/代理三态 + HTTP 状态
+    probe [--code X] [--list]
+          [--offline]               专项探针：实测行数、18 病覆盖度与字段，够不够填这一维
+    probe-status                    每源每份数据集最近一次的裁定，P0 覆盖度矩阵的雏形
     status                          库现状速览
+
+probe-reach 只回答"主机答不答话"，probe 才回答"取回来的东西能不能用"。
+两者都写 source_probe_log，靠 dataset_code 区分（reach / sitetype-icdo3 / mondo.obo）。
+probe --offline 用 data/raw 里最近一次归档重放，不联网：MONDO 的 .obo 有 51 MB，
+解析规则改一行重抓一次要七分钟，而那七分钟里上游什么都没变。
 """
 from __future__ import annotations
 
@@ -240,21 +247,38 @@ def cmd_probe_reach(codes: list[str] | None, include_all: bool, max_bytes: int, 
 
 
 def cmd_probe_status() -> int:
+    """每个源的每份数据集最近一次裁定。
+
+    一行一个 (source, dataset_code) 而不是一个 source：同一个源可以既有可达性探针
+    又有专项探针（mondo 的 reach 与 mondo.obo），两者的裁定不是一回事，
+    压成一行就会把"能连上"和"数据够用"混为一谈。
+    """
     with db.ro() as conn:
         rows = db.rows(
             conn,
-            "SELECT s.`code`, s.`status`, p.`probed_at`, p.`reachability`, p.`http_status`,"
-            "       p.`verdict`, LEFT(p.`message`, 90)"
-            " FROM `source` s"
-            " LEFT JOIN `source_probe_log` p ON p.`id` = ("
+            "SELECT s.`code`, p.`dataset_code`, p.`verdict`,"
+            "       CONCAT(IFNULL(p.`diseases_covered`,'-'),'/',IFNULL(p.`diseases_total`,'-')),"
+            "       IFNULL(p.`rows_seen`,'-'), p.`probed_at`, p.`reachability`, p.`http_status`,"
+            "       LEFT(p.`message`, 80)"
+            " FROM `source_probe_log` p JOIN `source` s ON s.`id` = p.`source_id`"
+            " WHERE p.`id` = ("
             "   SELECT MAX(p2.`id`) FROM `source_probe_log` p2"
-            "   WHERE p2.`source_id` = s.`id` AND p2.`dataset_code` = 'reach')"
-            " ORDER BY s.`id`",
+            "   WHERE p2.`source_id` = p.`source_id`"
+            "     AND p2.`dataset_code` = p.`dataset_code`)"
+            " ORDER BY s.`code`, p.`dataset_code`",
+        )
+        never = db.scalars(
+            conn,
+            "SELECT s.`code` FROM `source` s"
+            " WHERE NOT EXISTS (SELECT 1 FROM `source_probe_log` p WHERE p.`source_id` = s.`id`)"
+            " ORDER BY s.`code`",
         )
     _render(
-        ["code", "status", "probed_at", "reach", "http", "verdict", "message"],
+        ["code", "dataset", "verdict", "cov", "rows", "probed_at", "reach", "http", "message"],
         [list(r) for r in rows],
     )
+    if never:
+        print(f"\n从未探针过：{', '.join(never)}")
     return 0
 
 
@@ -290,7 +314,17 @@ def main(argv: list[str]) -> int:
     p.add_argument("--max-bytes", type=int, default=65536, help="只读这么多字节，够判可达性")
     p.add_argument("--sleep", type=float, default=1.0, help="源之间的间隔秒数，别把人家打疼")
 
-    sub.add_parser("probe-status", help="每源最近一次探针裁定")
+    p = sub.add_parser("probe", help="专项探针：实测行数、覆盖度与字段")
+    p.add_argument("--code", action="append", help="只跑指定探针，可重复")
+    p.add_argument("--sleep", type=float, default=1.0)
+    p.add_argument("--list", action="store_true", help="列出已实现的探针")
+    p.add_argument(
+        "--offline",
+        action="store_true",
+        help="用 data/raw 里最近一次归档重放，不联网。解析规则改一行不必重下 51 MB",
+    )
+
+    sub.add_parser("probe-status", help="每源每份数据集最近一次探针裁定")
     sub.add_parser("status", help="库现状速览")
 
     a = ap.parse_args(argv)
@@ -299,6 +333,15 @@ def main(argv: list[str]) -> int:
             return cmd_seed_sources(a.dry_run)
         if a.cmd == "probe-reach":
             return cmd_probe_reach(a.code, a.all, a.max_bytes, a.sleep)
+        if a.cmd == "probe":
+            # 延迟导入：专项探针会拖进 openpyxl 一类重依赖，
+            # status 这种轻命令不该为它付启动成本
+            from . import probes
+
+            if a.list:
+                print("已实现探针：" + ", ".join(probes.available()))
+                return 0
+            return probes.run(a.code, a.sleep, a.offline)
         if a.cmd == "probe-status":
             return cmd_probe_status()
         return cmd_status()
