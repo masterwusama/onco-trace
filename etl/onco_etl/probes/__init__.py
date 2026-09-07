@@ -14,11 +14,11 @@ for _s in (sys.stdout, sys.stderr):
         _s.reconfigure(encoding="utf-8", errors="replace")
 
 from .. import joblog
-from . import gbd_cra, gbd_results, globocan, gco_overtime, icdo3_seer, mondo, seer_statfacts, who_gho
+from . import gbd_cra, gbd_results, globocan, gco_overtime, gwas_catalog, icdo3_seer, mondo, seer_statfacts, who_gho
 from .result import ProbeResult, record
 
-_MODULES = (icdo3_seer, mondo, seer_statfacts, gbd_results, gbd_cra, globocan, gco_overtime,
-            who_gho)
+_MODULES = (icdo3_seer, mondo, seer_statfacts, gbd_results, gbd_cra, gwas_catalog, globocan,
+            gco_overtime, who_gho)
 REGISTRY = {m.SOURCE: m for m in _MODULES}
 
 

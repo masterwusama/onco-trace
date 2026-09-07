@@ -421,13 +421,33 @@ SOURCES: tuple[Source, ...] = (
         download_url="https://ftp.ebi.ac.uk/pub/databases/gwas/releases/latest/"
         "gwas-catalog-associations_ontology-annotated-full.zip",
         license="CC BY 4.0",
-        legal_note="EBI CC BY 4.0 需署名；文件是 zip，解析前先解压；探针只取前若干行确认字段",
+        legal_note="EBI CC BY 4.0 需署名；整包 73.5 MB 的 zip，流式解压只读里面那张 TSV，"
+        "不展开成 740 MB 落盘文件；探针取整包并解析全量而不是前若干行——关联表按录入年份排序，"
+        "取前缀会把填充率系统性量偏",
         fetch_mode="monthly",
         reliability="high",
         evidence="探针实测：旧入口 /gwas/api/search/downloads/full 已 404 下线。真实入口是 EBI FTP 的 "
-        "releases/latest/，其中 ontology-annotated 版带 EFO ID（疾病对齐就靠它），"
-        "同目录另有 gwas-efo-trait-mappings.tsv 做 trait→EFO 映射。"
-        "latest/ 是滚动目录，upstream_version 要从 releases/ 列表读，不能假定为固定值",
+        "releases/<年>/<月>/ 日历目录（实测 2026-09，这份包 2026-09-04 发布），latest/ 只是它的镜像，"
+        "所以 upstream_version 从日历目录读、不拼死。ontology-annotated 版整包 73,489,749 B，"
+        "里面 gwas-catalog-download-associations-alt-full.tsv 是 1,192,032 行 / 38 列。"
+        "疾病侧对齐靠 MAPPED_TRAIT_URI，而它用的是 MONDO URI（24619 个 trait 档里 2129 个是 MONDO_），"
+        "所以 B2 那个「MONDO 主条目 EFO xref 只有 5/18」的缺口在这里不构成障碍，方向反过来即可。"
+        "效应量与 CI 匿名就在文件里：`OR or BETA` 非空 84.3%、`95% CI (TEXT)` 非空 83.2%，"
+        "而 CI 只能按「含可解析区间」算，那是 75.0%"
+        "（非空 991,389 行减去含区间的 894,029 行，差的 97,360 行只有 `unit increase` 这类文字没数字）；"
+        "全表没有任何 PAF/归因分数列。`OR or BETA` 是 OR 与 β 一列混装：值 <0 的只有 6 行，"
+        "方向写在 CI 文本的 unit increase/decrease 注记里（841,694 行），"
+        "所以 effect_kind 无法自动判定，只能整列留未判定。"
+        "按 targets 声明的主条目 URI 精确命中：有行的 16/18，按判据（≥3 个带效应量与区间的独立位点）"
+        "14/18——breast_female 与 uterus 零行、pancreas 主条目 12 行全无区间、esophagus 只剩 1 个位点。"
+        "差的那几病关联大量挂在同级组织学档上（breast carcinoma 1832 行、prostate carcinoma 2694、"
+        "exocrine pancreatic carcinoma 171、endometrial carcinoma 102），并进来可达 18/18，"
+        "但要多 URI 声明列由 P1 人工裁定，不许按名字猜。"
+        "MAPPED_TRAIT_URI 是逗号分隔的多值列（96,520 行带 2~7 个档，MR 研究把暴露档与疾病档并在一行），"
+        "整格取尾档会让这 1,339 行伪装成本病自身的位点证据，所以只有单档行算命中；"
+        "label 列与 URI 列共用逗号而段数对不上的有 9,191 行，拆档只认 URI、label 当整串用。"
+        "取数姿势：单条长连接会在 53,767,694 B 处被断流且以 HTTP 200 正常收尾，"
+        "必须按 8 MB 分段 Range 续传",
     ),
     # ---- 前沿研究 ----
     Source(
