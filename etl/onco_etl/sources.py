@@ -276,7 +276,11 @@ SOURCES: tuple[Source, ...] = (
                  "（合计 6.3 GiB，最大单项 206 MB），另有 2 个 record 整页是 HTTP 200 的 Protected Page；"
                  "Results Tool 的查询接口要 Azure AD B2C 换来的 token"
                  "（scope https://ihmecsu.onmicrosoft.com/data-api/data.read），界面前还有一层 Cloudflare。"
-                 "“死亡年龄段分析”因此暂无源可用，改由 GLOBOCAN 与 WHO GHO 顶上",
+                 "“死亡年龄段分析”因此暂无源可用，改由 GLOBOCAN 与 WHO GHO 顶上。"
+                 "B4 复核（同日）：这份 codebook ZIP 仍直连 200 / 127869 字节，"
+                 "但它依旧是 2021 版词表，而平台已发布 GBD 2023（vizhub /api/config "
+                 "releaseText=GBD 2023、copyYear=2025）——引用这一档 ID 时标的年份按估计值那一版走，"
+                 "不要按词表的 Y2024M05D16 走",
     ),
     Source(
         code="gbd_cra",
@@ -285,17 +289,37 @@ SOURCES: tuple[Source, ...] = (
         source_type="statistics",
         dimensions=("risk",),
         home_url="https://vizhub.healthdata.org/gbd-compare/",
-        # B3 实测的是 IHME 整平台的门（Azure AD B2C + GHDX 下载登录页），不是某个数据集的门，
-        # 所以这一条按同源同门登记，B4 跑探针时复核一次
+        # 附件 URL 带发布日戳（…_Y2025M10D23.XLSX），填进登记表等于把一个季度就会换的
+        # 字符串当入口——下一版发出来这条 reach 记录就变 404，看着像源没了。
+        # 所以登记挂这份附件的那一页，版本由探针每次从页面现取
+        download_url="https://www.healthdata.org/research-analysis/about-gbd/gbd-data-and-tools-guide",
         auth="register",
         license="CC BY-NC 4.0",
         commercial_use=False,
-        legal_note="同 gbd_results；非商用 + 署名",
+        legal_note="IHME 内容 CC BY-NC 4.0：非商用 + 署名，注册的是免费非商用账号。"
+                   "归因口径必须与登记处观测分开标——CRA 是模型估的归因分数，"
+                   "SEER/GCO 是观测或估算的例数，不同表可以并排显示但不能相减",
         fetch_mode="annual",
         reliability="high",
-        evidence="disease_risk_factor 的 paf / 归因死亡数就来自这里：88 个危险因素 × 375 个病因。"
-                 "数值入口待 B4 实测；危险因素那一侧的词表已经匿名可取了——"
-                 "codebook ZIP 里的 REI Hierarchy 有 201 个条目，够搭反查的骨架",
+        evidence="B4 实测（2026-09-07）：效应量 0/18，关联骨架 10/18。"
+                 "vizhub GBD Compare 的匿名面只有 GET /api/config（200，只有 "
+                 "releaseText=GBD 2023 / gbdYear=2023 / copyYear=2025 这类版本字段），"
+                 "/api/metadata、/api/data、/api/hierarchy、/api/data/version 一律 401，"
+                 "对照 /api/language 404 说明 401 是真有路由且要授权；"
+                 "授权面同 gbd_results（Azure AD B2C，scope data-api/data.read）。"
+                 "匿名可取回的是 guide 页挂的 IHME_GBD_2023_A2_RESULTS_BY_MEASURE_Y2025M10D23.XLSX"
+                 "（294 KB，5 张表）：Risk 表 2390 行 cause×REI 对（217 病因 × 88 REI），"
+                 "Deaths/YLLs/YLDs/DALYs 四列只有 X 或空——有数标记，没有一个效应量数值，"
+                 "所以 disease_risk_factor 的 paf 列无源可填；Cause 表 381 档，"
+                 "targets.py 声明的 gbd_cause 18/18 在列（可作 gbd_results 词表的同源替代）。"
+                 "剔掉聚合档（规则：同病集合内仍有后代的不计；不能按 level≥3 切，"
+                 "High body-mass index 是二档却自带暴露与 PAF）后 10/18 病有 ≥3 个独立危险因素"
+                 "（lung 16 / colorectum 11 / breast_female 7 / liver 5 / pancreas 4 / esophagus 4 / "
+                 "prostate 4 / leukemia 4 / stomach 3 / kidney 3），"
+                 "cervix / ovary / bladder 各 2、thyroid/uterus/nhl/myeloma 各 1、brain 一行都没有。"
+                 "层级表只能继续用 2021 codebook：GBD 2023 的 Cause/REI/Location Hierarchies record "
+                 "页面上没有任何未登录文件链接，且这一版 2023 的 88 个 REI 全部能在 2021 层级表里找到，"
+                 "两版之间没有出现过重编号",
     ),
     Source(
         code="globocan",
