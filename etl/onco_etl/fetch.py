@@ -89,6 +89,7 @@ def _attempt(
     headers: dict | None,
     max_bytes: int | None,
     allow_redirects: bool,
+    json_body: dict | None = None,
 ) -> FetchResult:
     tag = "proxy" if proxy else "direct"
     t0 = time.perf_counter()
@@ -100,6 +101,7 @@ def _attempt(
                 url,
                 timeout=timeout,
                 headers=headers or None,
+                json=json_body,
                 stream=max_bytes is not None,
                 allow_redirects=allow_redirects,
             )
@@ -153,8 +155,13 @@ def fetch(
     etag: str | None = None,
     last_modified: str | None = None,
     use_proxy_fallback: bool = True,
+    json_body: dict | None = None,
 ) -> FetchResult:
-    """取一个 URL。直连失败或 5xx 时才试代理；两段都试过后取"信息量更大"的那个结果。"""
+    """取一个 URL。直连失败或 5xx 时才试代理；两段都试过后取"信息量更大"的那个结果。
+
+    `json_body` 是给 OpenTargets 这类只收 POST GraphQL 的入口用的：GET 探不到数据面，
+    而"能不能取回这一维"只能按 POST 的响应裁定，所以三态与重试逻辑必须复用同一套。
+    """
     cond = dict(headers or {})
     if etag:
         cond["If-None-Match"] = etag
@@ -169,6 +176,7 @@ def fetch(
         headers=cond or None,
         max_bytes=max_bytes,
         allow_redirects=allow_redirects,
+        json_body=json_body,
     )
     # 304 是成功：源没变，正是不必重新解析的信号
     if direct.ok or direct.status == 304 or (direct.status is not None and direct.status < 500):
@@ -186,6 +194,7 @@ def fetch(
         headers=cond or None,
         max_bytes=max_bytes,
         allow_redirects=allow_redirects,
+        json_body=json_body,
     )
     via_proxy.attempts = direct.attempts + via_proxy.attempts
     # 直连给了具体状态码、代理连不上时，保留状态码那条更有诊断价值

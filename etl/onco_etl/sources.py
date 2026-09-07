@@ -463,7 +463,27 @@ SOURCES: tuple[Source, ...] = (
         rate_note="分页 pageToken，避免并发",
         fetch_mode="weekly",
         reliability="high",
-        evidence="condition 是自由文本，20 病的查询词表命中率是判据；phase 与结果发布标记字段完整性要实测",
+        evidence="B5 实测（2026-09-08，单趟 149 s / 249 个请求）：18/18 病都有 ≥1 项在招试验。"
+        "按主查询（第一项 MeSH 主题词裸写 OR 同义词加引号）命中 110,954 项，其中在招 23,660、"
+        "未招募但仍在随访 7,449、已完成 46,704。同口径逐病比有两个方向的增益：主题词裸写比整串"
+        "加引号多 9,787 项（MeSH 概念展开），声明的同义词又在主题词之上多并进来 2,823 项"
+        "（brain +1,021、liver +606、colorectum +347、nhl +198）——两个都不能省。"
+        "逐词裸/引对比另有 8 个词裸写超过加引号的 2 倍（colorectum「colon cancer」8,256 对 2,273、"
+        "cervix「cervical cancer」11,331 对 2,538、breast_female「female breast carcinoma」4,182 对 78）"
+        "——非主题词裸写退化成词级匹配，会把别的癌种灌进来，所以只有声明的第一项允许裸写。"
+        "设计期以为 condition 能直接当键用，实测不成立：`fields=` 白名单里 "
+        "conditionsModule.meshTerm 与 derivedSection.* 一律 400，取回的记录里没有可对齐的 MeSH ID，"
+        "查询词只能在 targets.py 的 `search_terms` 里逐病声明。计数有机制：`countTotal=true` 让响应"
+        "顶层多出一个 `totalCount`，实测与逐页数出来的行数完全相等（`countOnly`/`meta`/`totalHits` "
+        "这些猜的名字一律 400，`pageSize=0` 回 200 但不给计数）——这一支第一版不知道它，"
+        "按 pageSize=1000 翻页数了两趟约 160 个请求、467 s，那个耗时结论作废。"
+        "23 个落库候选列实测过半有值的 18 个，稀疏的是 collaborators / location_countries / "
+        "other_outcome / publications / why_stopped，属试验本身的性质，落库允许为空。"
+        "匿名侧没有地理过滤器（`filter.geo` 三种写法与 `aggFilters=geo:CHN` 都被拒），"
+        "抽样 900 条里 0 条有中国大陆研究地点；在招口径可以问（`filter.overallStatus` 与 "
+        "`query.cond` 同时生效）。唯一的版本戳在 `/api/v2/version`"
+        "（实测 apiVersion 2.0.5 / dataTimestamp 2026-09-04T09:00:06），"
+        "`/api/v2/studies` 的 etag 是站点静态资源戳不是数据版本",
     ),
     Source(
         code="europepmc",
@@ -478,7 +498,19 @@ SOURCES: tuple[Source, ...] = (
         rate_note="官方建议低并发，批量走 OA 子集的 FTP 而不是逐篇取",
         fetch_mode="monthly",
         reliability="high",
-        evidence="按 MeSH 批量取文献；摘要全文可得率决定 L3 抽取有没有第二输入源",
+        evidence="B5 实测（2026-09-08，单趟 181 s）：18/18。近 5 年命中 765,891 篇、全库 2,357,107 篇；"
+        "全文可得率是两个数，不是一句「可得率多少」——facet 口径 OPEN_ACCESS 50.8%、IN_EPMC 56.5%，"
+        "而同一批查询的记录级抽样 900 条只有 31.7% isOpenAccess。差额是抽样构成造成的：抽到的源里 "
+        "MED 845 / PPR 47 / PMC 8，MED 内部 OA 率本来就低（先前实测 24.0%，PMC 内部 81.8%）。"
+        "facet 说的是库里有多少，记录级说的是随手翻到的是多少，L3 能不能拿到正文要看后者。"
+        "core 抽样 900 条的字段填充：abstractText 86.4%（症状抽取的第二输入）、title 100.0%、doi 98.6%、pmid 93.9%——落库按 pmid 建键，DOI 只当可选链接。"
+        "MeSH 不能当疾病键：同一批病按 `MH:` 字段只召回全库的 2.2%（52,282 / 2,357,107），"
+        "主题词检索另不稳定（`MH:\"Lung Neoplasms\"` 3,474 对自由文本 260,001）。三个必踩的坑："
+        "查询串必须 urlencode 生成，自己 percent-encode 与 `+` 编码对同一内容量出 20,275 与 3,474 两个数；"
+        "`PUB_YEAR:2021-2025` 连字符写法被静默忽略当成没过滤，必须 `lucene=true` 配 "
+        "`PUB_YEAR:[2021 TO *]`；错误查询回的是 HTTP 200 加 body 里的 errCode，"
+        "不判 errCode 就会把写错的查询记成「这一病没文献」。"
+        "响应只给搜索版本号（实测 version=6.9），没有数据发布日",
     ),
     Source(
         code="opentargets",
@@ -487,11 +519,30 @@ SOURCES: tuple[Source, ...] = (
         source_type="association_db",
         dimensions=("trial", "literature"),
         home_url="https://platform.opentargets.org/",
+        # 已确认可 GET 直连取到的入口只有这份清单；真实取数走 POST 的 GraphQL（见 evidence）。
+        # latest 是移动别名，版本号必须从文件里的 version 字段读，不能拼死
+        download_url="https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/latest/croissant.json",
         license="平台 Apache 2.0，数据随上游",
-        legal_note="平台代码 Apache 2.0，但关联数据继承各上游源条款（ChEMBL/ClinVar/GWAS 等），再发布前需逐上游确认",
+        legal_note="平台代码 Apache 2.0，但关联数据继承各上游源条款（ChEMBL/ClinVar/GWAS 等），再发布前需逐上游确认。"
+                   "B5 待裁：这份 croissant 清单自己的 license 字段写的是 CC0（publicdomain/zero/1.0），"
+                   "与本行\"继承上游\"的说法不一致——署名口径以哪个为准要人定，探针不替它改",
         fetch_mode="quarterly",
         reliability="high",
-        evidence="疾病↔靶点↔药关联带分数，是“前沿研究”与靶点/药反查的主力；下载入口在 EBI FTP",
+        evidence="B5 实测（2026-09-08，单趟 85 s）：18/18 达标（判据＝关联靶点 ≥10）。"
+        "点查层是 `POST api.platform.opentargets.org/api/v4/graphql`，匿名、收 MONDO 号"
+        "（`efoId:\"MONDO_0008903\"`，冒号换下划线），一次别名批量问完 18 病的关联数/文献量/"
+        "表型数/在研药数；关联靶点最少 breast_female 643、最多 colorectum 16,299，合计 212,130。"
+        "带分数的靶点清单可取（lung 首三条 EGFR 0.901、KRAS 0.858、ERBB2 0.842，"
+        "分数按 datasourceScores 拆到数据源，最高那项是 europepmc 1.0——即这条关联主要由文献共现撑起）。"
+        "父节点不能并进同一趟：18 病连 parents 一次问完回 408 Request Timeout，按 6 病一批才全通。"
+        "窄档问题按实测暴露：breast_female 节点 88 篇文献 vs 父节点 breast carcinoma 710,750，"
+        "pancreas 382 vs 166,685——换宽档要重新声明，探针不自动并档。"
+        "顺带的负向证据：9 病 phenotypes.count 为 0，其余 2~8 条，表型注释当不了症状维的源。"
+        "批量层是 EBI FTP `platform/<版本>/output/`，实测 56 个数据集 / 1,102 个 parquet 分片 / "
+        "58.5 GiB（最大 colocalisation 20 GB），清单声明的 56 个目录名与 FTP 实到完全一致；"
+        "croissant 不给单文件大小（根条目的 sha256 字段是字面量 'sha256' 占位），体量只能逐目录列。"
+        "版本 26.06 / datePublished 2026-06-23，GraphQL 的 meta.apiVersion 是 x/y/z 对象（26.6.3）"
+        "不是字符串——站点按点查用就够，落库不需要整包",
     ),
     # ---- 叙述与中文 ----
     Source(
