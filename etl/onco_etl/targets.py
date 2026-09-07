@@ -41,6 +41,11 @@
             carcinoma 而不是 breast cancer——后者不分性别。
             代价是这几个主条目的 xref 偏穷（uterine corpus cancer 连 UMLS 都没有），
             这部分缺口由探针如实上报，不靠换个更宽的 term 来粉饰。
+  gbd_cause GBD 病因层级里的 cause_id（`IHME_GBD_2021_HIERARCHIES` 的 Cause Hierarchy 表）。
+            不靠名字匹配：GBD 的叫法与我们的 name_en 对不上（Colon and rectum cancer vs
+            Colorectal），而按 ICD-10 反查又会在两处错口径——GBD 的 426 把气管和支气管肺
+            并成一档（我们的 C34 不含气管 C33），417 肝癌则按肝炎/酒精/NASH 再分 5 个 L4
+            亚档。亚档是危险因素维想要的东西，所以这一列只声明 L3 主档，展开交给探针。
 """
 from __future__ import annotations
 
@@ -58,27 +63,28 @@ class Target:
     category: str
     sex: str
     mondo_id: str
+    gbd_cause: str
 
 
 TARGETS: tuple[Target, ...] = (
-    Target("lung", "肺与支气管恶性肿瘤", "Lung and Bronchus", "C34", "C34.0-C34.9", "1622,1623,1624,1625,1628,1629", "carcinoma", "both", "MONDO:0008903"),
-    Target("colorectum", "结直肠恶性肿瘤", "Colorectal", "C18-C21", "C18.0-C21.8", "153,154", "carcinoma", "both", "MONDO:0005575"),
-    Target("liver", "肝与肝内胆管恶性肿瘤", "Liver and Intrahepatic Bile Duct", "C22", "C22.0-C22.1", "155", "carcinoma", "both", "MONDO:0002691"),
-    Target("stomach", "胃恶性肿瘤", "Stomach", "C16", "C16.0-C16.9", "151", "carcinoma", "both", "MONDO:0001056"),
-    Target("breast_female", "女性乳腺恶性肿瘤", "Breast (Female)", "C50", "C50.0-C50.9", "174", "carcinoma", "female", "MONDO:0004379"),
-    Target("pancreas", "胰腺恶性肿瘤", "Pancreas", "C25", "C25.0-C25.9", "157", "carcinoma", "both", "MONDO:0009831"),
-    Target("esophagus", "食管恶性肿瘤", "Esophagus", "C15", "C15.0-C15.9", "150", "carcinoma", "both", "MONDO:0007576"),
-    Target("prostate", "前列腺恶性肿瘤", "Prostate", "C61", "C61.9", "185", "carcinoma", "male", "MONDO:0008315"),
-    Target("cervix", "宫颈恶性肿瘤", "Cervix Uteri", "C53", "C53.0-C53.9", "180", "carcinoma", "female", "MONDO:0002974"),
-    Target("ovary", "卵巢恶性肿瘤", "Ovary", "C56", "C56.9", "1830", "carcinoma", "female", "MONDO:0008170"),
-    Target("thyroid", "甲状腺恶性肿瘤", "Thyroid", "C73", "C73.9", "193", "carcinoma", "both", "MONDO:0002108"),
-    Target("bladder", "膀胱恶性肿瘤", "Urinary Bladder", "C67", "C67.0-C67.9", "188", "carcinoma", "both", "MONDO:0001187"),
-    Target("kidney", "肾与肾盂恶性肿瘤", "Kidney and Renal Pelvis", "C64-C65", "C64.9-C65.9", "1890,1891", "carcinoma", "both", "MONDO:0002367"),
-    Target("brain", "脑与神经系统恶性肿瘤", "Brain and Other Nervous System", "C70-C72", "C70.0-C72.9", "191,192", "carcinoma", "both", "MONDO:0001657"),
-    Target("uterus", "子宫体恶性肿瘤", "Uterus (Corpus)", "C54-C55", "C54.0-C55.9", "179,182", "carcinoma", "female", "MONDO:0006003"),
-    Target("leukemia", "白血病", "Leukemia", "C91-C95", "C42.0-C42.4", "204,205,206,207,208", "heme", "both", "MONDO:0005059"),
-    Target("nhl", "非霍奇金淋巴瘤", "Non-Hodgkin Lymphoma", "C82-C85,C88,C96", "C42.0-C42.4", "200,202", "heme", "both", "MONDO:0018908"),
-    Target("myeloma", "多发性骨髓瘤", "Myeloma", "C88,C90", "C42.0-C42.4", "203", "heme", "both", "MONDO:0009693"),
+    Target("lung", "肺与支气管恶性肿瘤", "Lung and Bronchus", "C34", "C34.0-C34.9", "1622,1623,1624,1625,1628,1629", "carcinoma", "both", "MONDO:0008903", "426"),
+    Target("colorectum", "结直肠恶性肿瘤", "Colorectal", "C18-C21", "C18.0-C21.8", "153,154", "carcinoma", "both", "MONDO:0005575", "441"),
+    Target("liver", "肝与肝内胆管恶性肿瘤", "Liver and Intrahepatic Bile Duct", "C22", "C22.0-C22.1", "155", "carcinoma", "both", "MONDO:0002691", "417"),
+    Target("stomach", "胃恶性肿瘤", "Stomach", "C16", "C16.0-C16.9", "151", "carcinoma", "both", "MONDO:0001056", "414"),
+    Target("breast_female", "女性乳腺恶性肿瘤", "Breast (Female)", "C50", "C50.0-C50.9", "174", "carcinoma", "female", "MONDO:0004379", "429"),
+    Target("pancreas", "胰腺恶性肿瘤", "Pancreas", "C25", "C25.0-C25.9", "157", "carcinoma", "both", "MONDO:0009831", "456"),
+    Target("esophagus", "食管恶性肿瘤", "Esophagus", "C15", "C15.0-C15.9", "150", "carcinoma", "both", "MONDO:0007576", "411"),
+    Target("prostate", "前列腺恶性肿瘤", "Prostate", "C61", "C61.9", "185", "carcinoma", "male", "MONDO:0008315", "438"),
+    Target("cervix", "宫颈恶性肿瘤", "Cervix Uteri", "C53", "C53.0-C53.9", "180", "carcinoma", "female", "MONDO:0002974", "432"),
+    Target("ovary", "卵巢恶性肿瘤", "Ovary", "C56", "C56.9", "1830", "carcinoma", "female", "MONDO:0008170", "465"),
+    Target("thyroid", "甲状腺恶性肿瘤", "Thyroid", "C73", "C73.9", "193", "carcinoma", "both", "MONDO:0002108", "480"),
+    Target("bladder", "膀胱恶性肿瘤", "Urinary Bladder", "C67", "C67.0-C67.9", "188", "carcinoma", "both", "MONDO:0001187", "474"),
+    Target("kidney", "肾与肾盂恶性肿瘤", "Kidney and Renal Pelvis", "C64-C65", "C64.9-C65.9", "1890,1891", "carcinoma", "both", "MONDO:0002367", "471"),
+    Target("brain", "脑与神经系统恶性肿瘤", "Brain and Other Nervous System", "C70-C72", "C70.0-C72.9", "191,192", "carcinoma", "both", "MONDO:0001657", "477"),
+    Target("uterus", "子宫体恶性肿瘤", "Uterus (Corpus)", "C54-C55", "C54.0-C55.9", "179,182", "carcinoma", "female", "MONDO:0006003", "435"),
+    Target("leukemia", "白血病", "Leukemia", "C91-C95", "C42.0-C42.4", "204,205,206,207,208", "heme", "both", "MONDO:0005059", "487"),
+    Target("nhl", "非霍奇金淋巴瘤", "Non-Hodgkin Lymphoma", "C82-C85,C88,C96", "C42.0-C42.4", "200,202", "heme", "both", "MONDO:0018908", "485"),
+    Target("myeloma", "多发性骨髓瘤", "Myeloma", "C88,C90", "C42.0-C42.4", "203", "heme", "both", "MONDO:0009693", "486"),
 )
 
 BY_CODE = {t.code: t for t in TARGETS}

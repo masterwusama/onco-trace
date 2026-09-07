@@ -64,12 +64,21 @@ def latest(source_code: str, key: str, name: str) -> Path | None:
     return path if path.exists() else None
 
 
-def newest_dir(source_code: str) -> Path | None:
-    """最近一次归档的版本目录，给多页面数据集的离线重放用。"""
+def newest_dir(source_code: str, requires: str | None = None) -> Path | None:
+    """最近一次归档的版本目录，给多页面数据集的离线重放用。
+
+    `requires` 传了就只能挑"确实装着这份数据集"的目录，别嫌它啰嗦：
+    probe-reach 会把可达性探针的原始响应也归档成 `data/raw/<code>/reach-<日期>/<code>.bin`，
+    而它通常跑在专项探针之后。纯按 mtime 取最新目录就会挑中这个只有 .bin 的空壳，
+    离线重放于是报"缺归档"——SEER 探针更会把 18 页全缺记成 `verdict=dead`，
+    在覆盖度日志里留下一条假死讯。
+    """
     root = DATA_RAW / source_code
     if not root.is_dir():
         return None
     dirs = [p for p in root.iterdir() if p.is_dir()]
+    if requires:
+        dirs = [p for p in dirs if next(p.glob(requires), None)]
     return max(dirs, key=lambda p: p.stat().st_mtime) if dirs else None
 
 

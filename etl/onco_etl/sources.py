@@ -255,12 +255,28 @@ SOURCES: tuple[Source, ...] = (
         source_type="statistics",
         dimensions=("stat",),
         home_url="https://vizhub.healthdata.org/gbd-results/",
+        # 整轮 GBD 的数值一律要登录，唯一匿名可取的是这份词表 ZIP——
+        # download_url 按"已确认可直接取到"的规矩只填它，不代表取到词表就等于取到数据
+        download_url=(
+            "https://ghdx.healthdata.org/sites/default/files/ihme_query_tool/"
+            "IHME_GBD_2021_CODEBOOK.zip"
+        ),
+        auth="register",
         license="CC BY-NC 4.0",
         commercial_use=False,
-        legal_note="IHME 数据非商用且必须署名；批量下载历史上要在工具里选维度，是否存在可编程批量入口是 B3 第一个要实测的问题",
+        legal_note="IHME 数据非商用且必须署名；实测数值入口一律要注册登录，"
+                   "注册的是免费非商用账号，走通之前这一维不能算通",
         fetch_mode="annual",
         reliability="high",
-        evidence="“死亡年龄段分析”要靠它的 deaths by age；GBD 2023 覆盖 375 病因 × 204 地区",
+        evidence="B3 实测（2026-09-07）：设计口径全中，数值入口全关。"
+                 "词表层 18/18 病都有对应病因档（另带 13 个 L4 亚档，肝癌按肝炎/酒精/NASH 分因）、"
+                 "中国=location_id 6、年度 1990–2021、性别 Male/Female/Both、"
+                 "年龄组词表 155 档（含 1 岁一档 94 个）、Deaths/Incidence/Prevalence/YLDs 四个度量都在。"
+                 "但 GBD 2023 的 22 个 GHDX record 里 118 个文件的下载链接一律换成 /download-access/login"
+                 "（合计 6.3 GiB，最大单项 206 MB），另有 2 个 record 整页是 HTTP 200 的 Protected Page；"
+                 "Results Tool 的查询接口要 Azure AD B2C 换来的 token"
+                 "（scope https://ihmecsu.onmicrosoft.com/data-api/data.read），界面前还有一层 Cloudflare。"
+                 "“死亡年龄段分析”因此暂无源可用，改由 GLOBOCAN 与 WHO GHO 顶上",
     ),
     Source(
         code="gbd_cra",
@@ -269,12 +285,17 @@ SOURCES: tuple[Source, ...] = (
         source_type="statistics",
         dimensions=("risk",),
         home_url="https://vizhub.healthdata.org/gbd-compare/",
+        # B3 实测的是 IHME 整平台的门（Azure AD B2C + GHDX 下载登录页），不是某个数据集的门，
+        # 所以这一条按同源同门登记，B4 跑探针时复核一次
+        auth="register",
         license="CC BY-NC 4.0",
         commercial_use=False,
         legal_note="同 gbd_results；非商用 + 署名",
         fetch_mode="annual",
         reliability="high",
-        evidence="disease_risk_factor 的 paf / 归因死亡数就来自这里：88 个危险因素 × 375 个病因",
+        evidence="disease_risk_factor 的 paf / 归因死亡数就来自这里：88 个危险因素 × 375 个病因。"
+                 "数值入口待 B4 实测；危险因素那一侧的词表已经匿名可取了——"
+                 "codebook ZIP 里的 REI Hierarchy 有 201 个条目，够搭反查的骨架",
     ),
     Source(
         code="globocan",

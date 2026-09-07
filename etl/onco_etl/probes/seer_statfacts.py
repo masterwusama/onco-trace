@@ -241,9 +241,14 @@ def probe(offline: bool = False) -> ProbeResult:
 
     key_dir: Path | None = None
     if offline:
-        key_dir = raw.newest_dir(SOURCE)
+        # 必须限定"目录里真的有 .html"：probe-reach 会把 seer_statfacts.bin 归档到
+        # 同一个源目录下的 reach-<日期>/，它一跑就比专项归档新，纯按 mtime 挑会挑中那个空壳，
+        # 18 页全找不到之后被判成 dead——给覆盖度留下一条源已死的假消息
+        key_dir = raw.newest_dir(SOURCE, "*.html")
         if not key_dir:
-            raise SystemExit(f"离线重放需要先有一份归档：data/raw/{SOURCE}/<version>/ 不存在")
+            raise SystemExit(
+                f"离线重放需要先有一份归档：data/raw/{SOURCE}/<version>/*.html 不存在"
+            )
 
     pages: dict[str, dict] = {}
     dead: list[str] = []
