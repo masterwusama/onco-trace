@@ -202,12 +202,28 @@ SOURCES: tuple[Source, ...] = (
         source_type="html_doc",
         dimensions=("symptom", "narrative"),
         home_url="https://www.cancer.gov/types",
+        download_url="https://www.cancer.gov/sitemaps/pageinstructions.xml",
         license="US Government work",
-        legal_note="美国政府公开内容，可转载需署名 NCI；实测无 JSON/XML 端点，只有 HTML，是 L3 抽取的主要输入",
+        legal_note="美国政府公开内容，可转载需署名 NCI；站点无内容级 JSON/XML 端点，症状正文只有 HTML"
+        "（sitemap 是唯一的 XML，只给 loc 与 lastmod，不给正文）",
         fetch_mode="monthly",
         reliability="high",
-        evidence="L3 症状抽取的正文来源；要实测的是页面结构稳定性与"
-        "正文里到底给不给频率（多数只列症状不给百分比，那 freq_band 才是要填的字段）",
+        evidence="探针实测（2026-09-08；sitemap 6,480 个 loc / 831 个含 pdq / 791 个在 /types/ 下，"
+        "18 病按 targets.py 的 pdq_pages 认领 30 页）：症状维过判据——18/18 病从症状小节规则化取回"
+        "≥4 条症状项，合计 209 条清单条目，5 病目测 precision 100%（判据线 ≥80%）。"
+        "原设计两处假设被推翻：① 「这一维要靠 L3 模型抽取兜底」不成立，病人版页面的症状就是现成的"
+        " <ul><li> 清单，L2 规则解析直接出条目，模型只在需要中文症状名时才用得上；"
+        "② 「正文给不给频率」的答案是一条都不给——症状小节里百分号出现数为 0（hp 版整页 1,857 个"
+        "百分号全是生存率与缓解率，没有一个落在症状段里），所以 freq_band 这一列这一源供不了。"
+        "入口形状不统一，只能逐病声明：摘要页是 /types/<段>/<hp|patient>/<slug>-pdq，"
+        "18 段里只有 12 段开了 patient 子树，另 6 段的病人内容在 /types/<段>/symptoms 栏目页"
+        "（这种页全站只有 12 段有，lung/ovarian/thyroid/prostate/pancreatic 都没有）；"
+        "旧结构 /types/lung/pdq/lung-adult-pdq 已 404，不存在的路径会 301 到栏目页并回 HTTP 200，"
+        "所以每页必须比对 final_url。乳腺段最特殊：栏目页只有三句散文，全段唯一一份症状清单"
+        "挂在男性乳腺癌页。版本戳页内取不到（响应头 Last-Modified 每页都是同一个站点重建时间，"
+        "摘要页也没有 Updated），只能取 sitemap 的 per-page lastmod（本次最大 2026-07-09）。"
+        "清单还不总挂在症状标题下（myeloma 两串挂在疾病名节的冒号引言后），取的是引言句之后"
+        "紧跟的那一串，解析规则见 probes/nci_pdq_html.py。",
     ),
     # ---- 统计层 ----
     Source(
@@ -550,14 +566,38 @@ SOURCES: tuple[Source, ...] = (
         name="WHO 癌症 Fact Sheets（含中文版）",
         org="WHO",
         source_type="html_doc",
-        dimensions=("narrative",),
+        dimensions=("narrative", "symptom"),
         home_url="https://www.who.int/news-room/fact-sheets/detail/cancer",
+        download_url="https://www.who.int/news-room/fact-sheets",
         license="CC BY-NC-SA 3.0 IGO",
         commercial_use=False,
-        legal_note="WHO 内容 CC BY-NC-SA 3.0 IGO：需署名、禁商用、同条款共享；商用站点不可直接转载",
+        legal_note="WHO 内容 CC BY-NC-SA 3.0 IGO：需署名、禁商用、同条款共享；商用站点不可直接转载"
+        "——这一条与站点是否商用直接冲突，症状维已有 PDQ（美国政府公开内容）可替，"
+        "WHO 只剩\"中文症状名与概述底稿\"这一项用途，是否值得为它放弃商用空间交 B7 裁",
         fetch_mode="annual",
         reliability="high",
-        evidence="中文长文本的少数正规来源之一；页面少但权威，适合做疾病概述的底稿",
+        evidence="探针实测（2026-09-08；A-Z 列表页一次请求回 242 份 sheet 的 slug 与标题，"
+        "按 targets 词认领到 6 份并逐份取中英两版 + 试六语种，77 s）："
+        "**不达判据**——判据线是 ≥12/18 病有癌种专页，实测 4/18"
+        "（lung、colorectum、breast_female、cervix），肝/胃/胰腺/食管/前列腺/卵巢/甲状腺/膀胱/"
+        "肾/脑/子宫体/白血病/NHL/骨髓瘤 14 病 WHO 压根没有专页，这不是抓取失败。"
+        "但它的独特价值坐实了：中文症状清单是真翻译且带现成 <li>，"
+        "breast 5 条、colorectal 6 条、lung 7 条，目测 precision 100%，"
+        "所以\"中文症状名\"这一列有公开非模型的路可走——代价是只覆盖这 3 病，"
+        "cervix 有专页但整页没有症状节（中英都没有）。另有两份不分病种的通页"
+        "（Cancer、Childhood cancer）能给 18 病共用的概述。"
+        "口径五处：① 正文容器是 <section id='content'>，按 <article> 取会连整站导航的 24 串菜单进来；"
+        "② 中文 URL 是换根不是加后缀，/zh/news-room/fact-sheets/detail/<slug> 可取、"
+        "/detail/<slug>/zh/ 回 404，实测 6 份 sheet 的六语种全回 200；"
+        "③ 中英两版的小节集合不是同一套——乳腺癌那 5 条症状中文版有\"症状\"标题、英文版整页没有 "
+        "Symptoms 节（挂在 \"Who is at risk?\" 之下），而 Cancer 通页英文版连 Key facts 一节都没有"
+        "（结构是 The problem / Causes / Risk factors / …），中文版有 5 条要点，"
+        "所以按标题定位必须逐语种各切一遍；"
+        "④ 版本戳在页内 <div class='date'>，中文页「2026年7月3日」、英文页「3 July 2026」两种格式，"
+        "与 JSON-LD dateModified 互校后实测 12 页全等；各 sheet 自己更新，"
+        "认领到的 6 份跨度 2026-02-13…2026-07-03，所以不能取\"今天\"当版本；"
+        "⑤ schema.org 的 hasHealthAspect 只有部分中文页有（breast 3 类、colorectal 与 lung 4 类，"
+        "cervical 与两份通页无，英文页全无），只能当佐证不能当段别索引。",
     ),
     Source(
         code="wikidata",

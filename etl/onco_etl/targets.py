@@ -75,6 +75,27 @@
                 所以男性乳腺癌那不到 1% 的份额在这一路没法剔——如实记成口径缺口，不靠换词解决。
             不收的词也记在这里：`NHL` 这种缩写会在文献库里捞进国家冰球联盟，
             `uterine cancer` 会在标题摘要里把宫颈癌算进子宫体。
+  pdq_pages cancer.gov（NCI PDQ 及其病人版栏目）的页面相对路径，B6 实测后声明。
+            这一列只能由人填，因为 cancer.gov 的入口形状压根不统一：247 个 PDQ 摘要页按
+            `/types/<段>/<hp|patient>/<slug>-pdq` 排布，18 个段里只有 12 个开了 `patient/`，
+            另 6 段（liver、stomach、breast、esophageal、cervical、bladder）的病人内容在
+            `/types/<段>/symptoms` 这类栏目页上，而这种 symptoms 页全站只有 12 段有。
+            同一个 ICD 段还会被 PDQ 拆档：C34 拆成非小细胞与小细胞两份、C18-C21 拆成
+            colon 与 rectal 两份、C91-C95 拆成 adult-all / adult-aml / cll / cml 四份。
+            所以既不能"按段名拼一个 URL"，也不能"把段下所有页都算给这个病"。
+            探针拿这份清单去 sitemap 里核对（清单与 sitemap 对不上就是上游改版，要报警），
+            再逐页取回量症状小节，见 probes/nci_pdq_html.py。
+            取舍：只认领与 icd10 段语义对齐的成人常见类型，`child-*` 与 hairy-cell、pnet、
+            uterine-sarcoma 这些罕见亚型不收——站点口径是成人发病基准。代价是 brain 与
+            leukemia 的症状只覆盖成人档，儿童型的症状差异在这一路看不见。
+            乳腺这一行要单独说明：breast 段没有病人版摘要页（`/types/breast/patient/*`
+            一律 301 到栏目页，HTTP 还是 200，所以探针比 final_url 不能只看状态码），
+            而栏目页 `/types/breast/symptoms` 的症状只有三句散文，其中两句是
+            "症状因类型而异""早期往往没有症状"，切不出条目。全段唯一一份症状清单在
+            `types/breast/male-breast-cancer`（8 条：肿块、乳头形态改变、溢液、皮肤凹陷…），
+            这一页是给男性写的，但那 8 条措辞与女性栏目页散文里那句"乳房肿块或变化"同源，
+            所以认领它，代价如实记在这里：女性乳腺的症状措辞来自男性乳腺癌页，
+            每行的 source_url 会指到那一页，读的人看得见这一条口径。
 """
 from __future__ import annotations
 
@@ -96,27 +117,28 @@ class Target:
     gco_today: str
     gco_time: str
     search_terms: tuple[str, ...]
+    pdq_pages: tuple[str, ...]
 
 
 TARGETS: tuple[Target, ...] = (
-    Target("lung", "肺与支气管恶性肿瘤", "Lung and Bronchus", "C34", "C34.0-C34.9", "1622,1623,1624,1625,1628,1629", "carcinoma", "both", "MONDO:0008903", "426", "15", "11", ("Lung Neoplasms", "lung cancer", "bronchus cancer", "non-small cell lung carcinoma", "small cell lung carcinoma")),
-    Target("colorectum", "结直肠恶性肿瘤", "Colorectal", "C18-C21", "C18.0-C21.8", "153,154", "carcinoma", "both", "MONDO:0005575", "441", "41", "106", ("Colorectal Neoplasms", "colorectal cancer", "colon cancer", "rectal cancer")),
-    Target("liver", "肝与肝内胆管恶性肿瘤", "Liver and Intrahepatic Bile Duct", "C22", "C22.0-C22.1", "155", "carcinoma", "both", "MONDO:0002691", "417", "11", "7", ("Liver Neoplasms", "liver cancer", "hepatocellular carcinoma", "intrahepatic cholangiocarcinoma")),
-    Target("stomach", "胃恶性肿瘤", "Stomach", "C16", "C16.0-C16.9", "151", "carcinoma", "both", "MONDO:0001056", "414", "7", "3", ("Stomach Neoplasms", "gastric cancer", "stomach cancer")),
-    Target("breast_female", "女性乳腺恶性肿瘤", "Breast (Female)", "C50", "C50.0-C50.9", "174", "carcinoma", "female", "MONDO:0004379", "429", "20", "14", ("Breast Neoplasms", "breast cancer", "female breast carcinoma")),
-    Target("pancreas", "胰腺恶性肿瘤", "Pancreas", "C25", "C25.0-C25.9", "157", "carcinoma", "both", "MONDO:0009831", "456", "13", "9", ("Pancreatic Neoplasms", "pancreatic cancer", "pancreatic ductal adenocarcinoma")),
-    Target("esophagus", "食管恶性肿瘤", "Esophagus", "C15", "C15.0-C15.9", "150", "carcinoma", "both", "MONDO:0007576", "411", "6", "2", ("Esophageal Neoplasms", "esophageal cancer", "esophageal squamous cell carcinoma", "esophageal adenocarcinoma")),
-    Target("prostate", "前列腺恶性肿瘤", "Prostate", "C61", "C61.9", "185", "carcinoma", "male", "MONDO:0008315", "438", "27", "19", ("Prostatic Neoplasms", "prostate cancer")),
-    Target("cervix", "宫颈恶性肿瘤", "Cervix Uteri", "C53", "C53.0-C53.9", "180", "carcinoma", "female", "MONDO:0002974", "432", "23", "16", ("Uterine Cervical Neoplasms", "cervical cancer", "cervix uteri cancer")),
-    Target("ovary", "卵巢恶性肿瘤", "Ovary", "C56", "C56.9", "1830", "carcinoma", "female", "MONDO:0008170", "465", "25", "18", ("Ovarian Neoplasms", "ovarian cancer", "ovary cancer")),
-    Target("thyroid", "甲状腺恶性肿瘤", "Thyroid", "C73", "C73.9", "193", "carcinoma", "both", "MONDO:0002108", "480", "32", "24", ("Thyroid Neoplasms", "thyroid cancer")),
-    Target("bladder", "膀胱恶性肿瘤", "Urinary Bladder", "C67", "C67.0-C67.9", "188", "carcinoma", "both", "MONDO:0001187", "474", "30", "22", ("Bladder Neoplasms", "bladder cancer", "urinary bladder cancer")),
-    Target("kidney", "肾与肾盂恶性肿瘤", "Kidney and Renal Pelvis", "C64-C65", "C64.9-C65.9", "1890,1891", "carcinoma", "both", "MONDO:0002367", "471", "29", "21", ("Kidney Neoplasms", "kidney cancer", "renal cell carcinoma", "renal pelvis cancer")),
-    Target("brain", "脑与神经系统恶性肿瘤", "Brain and Other Nervous System", "C70-C72", "C70.0-C72.9", "191,192", "carcinoma", "both", "MONDO:0001657", "477", "31", "23", ("Brain Neoplasms", "brain cancer", "brain tumor", "nervous system cancer")),
-    Target("uterus", "子宫体恶性肿瘤", "Uterus (Corpus)", "C54-C55", "C54.0-C55.9", "179,182", "carcinoma", "female", "MONDO:0006003", "435", "24", "17", ("Endometrial Neoplasms", "endometrial cancer", "uterine corpus cancer", "corpus uteri cancer")),
-    Target("leukemia", "白血病", "Leukemia", "C91-C95", "C42.0-C42.4", "204,205,206,207,208", "heme", "both", "MONDO:0005059", "487", "36", "28", ("Leukemia", "leukaemia", "acute myeloid leukemia", "chronic lymphocytic leukemia")),
-    Target("nhl", "非霍奇金淋巴瘤", "Non-Hodgkin Lymphoma", "C82-C85,C88,C96", "C42.0-C42.4", "200,202", "heme", "both", "MONDO:0018908", "485", "34", "26", ("Lymphoma, Non-Hodgkin", "non-hodgkin lymphoma", "follicular lymphoma", "diffuse large B-cell lymphoma")),
-    Target("myeloma", "多发性骨髓瘤", "Myeloma", "C88,C90", "C42.0-C42.4", "203", "heme", "both", "MONDO:0009693", "486", "35", "27", ("Multiple Myeloma", "myeloma")),
+    Target("lung", "肺与支气管恶性肿瘤", "Lung and Bronchus", "C34", "C34.0-C34.9", "1622,1623,1624,1625,1628,1629", "carcinoma", "both", "MONDO:0008903", "426", "15", "11", ("Lung Neoplasms", "lung cancer", "bronchus cancer", "non-small cell lung carcinoma", "small cell lung carcinoma"), ("types/lung/patient/non-small-cell-lung-treatment-pdq", "types/lung/patient/small-cell-lung-treatment-pdq")),
+    Target("colorectum", "结直肠恶性肿瘤", "Colorectal", "C18-C21", "C18.0-C21.8", "153,154", "carcinoma", "both", "MONDO:0005575", "441", "41", "106", ("Colorectal Neoplasms", "colorectal cancer", "colon cancer", "rectal cancer"), ("types/colorectal/patient/colon-treatment-pdq", "types/colorectal/patient/rectal-treatment-pdq")),
+    Target("liver", "肝与肝内胆管恶性肿瘤", "Liver and Intrahepatic Bile Duct", "C22", "C22.0-C22.1", "155", "carcinoma", "both", "MONDO:0002691", "417", "11", "7", ("Liver Neoplasms", "liver cancer", "hepatocellular carcinoma", "intrahepatic cholangiocarcinoma"), ("types/liver/what-is-liver-cancer", "types/liver/hp/adult-liver-treatment-pdq", "types/liver/hp/bile-duct-treatment-pdq")),
+    Target("stomach", "胃恶性肿瘤", "Stomach", "C16", "C16.0-C16.9", "151", "carcinoma", "both", "MONDO:0001056", "414", "7", "3", ("Stomach Neoplasms", "gastric cancer", "stomach cancer"), ("types/stomach/symptoms", "types/stomach/hp/stomach-treatment-pdq")),
+    Target("breast_female", "女性乳腺恶性肿瘤", "Breast (Female)", "C50", "C50.0-C50.9", "174", "carcinoma", "female", "MONDO:0004379", "429", "20", "14", ("Breast Neoplasms", "breast cancer", "female breast carcinoma"), ("types/breast/symptoms", "types/breast/hp/breast-treatment-pdq", "types/breast/male-breast-cancer")),
+    Target("pancreas", "胰腺恶性肿瘤", "Pancreas", "C25", "C25.0-C25.9", "157", "carcinoma", "both", "MONDO:0009831", "456", "13", "9", ("Pancreatic Neoplasms", "pancreatic cancer", "pancreatic ductal adenocarcinoma"), ("types/pancreatic/patient/pancreatic-treatment-pdq",)),
+    Target("esophagus", "食管恶性肿瘤", "Esophagus", "C15", "C15.0-C15.9", "150", "carcinoma", "both", "MONDO:0007576", "411", "6", "2", ("Esophageal Neoplasms", "esophageal cancer", "esophageal squamous cell carcinoma", "esophageal adenocarcinoma"), ("types/esophageal/symptoms", "types/esophageal/hp/esophageal-treatment-pdq")),
+    Target("prostate", "前列腺恶性肿瘤", "Prostate", "C61", "C61.9", "185", "carcinoma", "male", "MONDO:0008315", "438", "27", "19", ("Prostatic Neoplasms", "prostate cancer"), ("types/prostate/patient/prostate-treatment-pdq",)),
+    Target("cervix", "宫颈恶性肿瘤", "Cervix Uteri", "C53", "C53.0-C53.9", "180", "carcinoma", "female", "MONDO:0002974", "432", "23", "16", ("Uterine Cervical Neoplasms", "cervical cancer", "cervix uteri cancer"), ("types/cervical/symptoms", "types/cervical/hp/cervical-treatment-pdq")),
+    Target("ovary", "卵巢恶性肿瘤", "Ovary", "C56", "C56.9", "1830", "carcinoma", "female", "MONDO:0008170", "465", "25", "18", ("Ovarian Neoplasms", "ovarian cancer", "ovary cancer"), ("types/ovarian/patient/ovarian-epithelial-treatment-pdq",)),
+    Target("thyroid", "甲状腺恶性肿瘤", "Thyroid", "C73", "C73.9", "193", "carcinoma", "both", "MONDO:0002108", "480", "32", "24", ("Thyroid Neoplasms", "thyroid cancer"), ("types/thyroid/patient/thyroid-treatment-pdq",)),
+    Target("bladder", "膀胱恶性肿瘤", "Urinary Bladder", "C67", "C67.0-C67.9", "188", "carcinoma", "both", "MONDO:0001187", "474", "30", "22", ("Bladder Neoplasms", "bladder cancer", "urinary bladder cancer"), ("types/bladder/symptoms", "types/bladder/hp/bladder-treatment-pdq")),
+    Target("kidney", "肾与肾盂恶性肿瘤", "Kidney and Renal Pelvis", "C64-C65", "C64.9-C65.9", "1890,1891", "carcinoma", "both", "MONDO:0002367", "471", "29", "21", ("Kidney Neoplasms", "kidney cancer", "renal cell carcinoma", "renal pelvis cancer"), ("types/kidney/patient/kidney-treatment-pdq", "types/kidney/patient/transitional-cell-treatment-pdq")),
+    Target("brain", "脑与神经系统恶性肿瘤", "Brain and Other Nervous System", "C70-C72", "C70.0-C72.9", "191,192", "carcinoma", "both", "MONDO:0001657", "477", "31", "23", ("Brain Neoplasms", "brain cancer", "brain tumor", "nervous system cancer"), ("types/brain/patient/adult-brain-treatment-pdq",)),
+    Target("uterus", "子宫体恶性肿瘤", "Uterus (Corpus)", "C54-C55", "C54.0-C55.9", "179,182", "carcinoma", "female", "MONDO:0006003", "435", "24", "17", ("Endometrial Neoplasms", "endometrial cancer", "uterine corpus cancer", "corpus uteri cancer"), ("types/uterine/patient/endometrial-treatment-pdq",)),
+    Target("leukemia", "白血病", "Leukemia", "C91-C95", "C42.0-C42.4", "204,205,206,207,208", "heme", "both", "MONDO:0005059", "487", "36", "28", ("Leukemia", "leukaemia", "acute myeloid leukemia", "chronic lymphocytic leukemia"), ("types/leukemia/patient/adult-all-treatment-pdq", "types/leukemia/patient/adult-aml-treatment-pdq", "types/leukemia/patient/cll-treatment-pdq", "types/leukemia/patient/cml-treatment-pdq")),
+    Target("nhl", "非霍奇金淋巴瘤", "Non-Hodgkin Lymphoma", "C82-C85,C88,C96", "C42.0-C42.4", "200,202", "heme", "both", "MONDO:0018908", "485", "34", "26", ("Lymphoma, Non-Hodgkin", "non-hodgkin lymphoma", "follicular lymphoma", "diffuse large B-cell lymphoma"), ("types/lymphoma/patient/adult-nhl-treatment-pdq",)),
+    Target("myeloma", "多发性骨髓瘤", "Myeloma", "C88,C90", "C42.0-C42.4", "203", "heme", "both", "MONDO:0009693", "486", "35", "27", ("Multiple Myeloma", "myeloma"), ("types/myeloma/patient/myeloma-treatment-pdq",)),
 )
 
 BY_CODE = {t.code: t for t in TARGETS}
