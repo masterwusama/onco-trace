@@ -48,9 +48,29 @@ def archive(source_code: str, key: str, name: str, body: str | bytes) -> Path:
     return path
 
 
+def archive_dir(source_code: str, key: str) -> Path:
+    """一份数据集是"一组页面"而不是"一个文件"时用这个：只建目录，由调用方往里写。
+
+    SEER Stat Facts 是 18 个 HTML 页，PDQ 与 WHO fact sheet 也是同一形状。
+    硬要塞进单文件归档就得自己拼一个 tar，重放时反而多一层解包。
+    """
+    d = DATA_RAW / source_code / key
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def latest(source_code: str, key: str, name: str) -> Path | None:
     path = target_path(source_code, key, name)
     return path if path.exists() else None
+
+
+def newest_dir(source_code: str) -> Path | None:
+    """最近一次归档的版本目录，给多页面数据集的离线重放用。"""
+    root = DATA_RAW / source_code
+    if not root.is_dir():
+        return None
+    dirs = [p for p in root.iterdir() if p.is_dir()]
+    return max(dirs, key=lambda p: p.stat().st_mtime) if dirs else None
 
 
 def newest(source_code: str, name: str) -> Path | None:

@@ -221,7 +221,32 @@ SOURCES: tuple[Source, ...] = (
         legal_note="美国政府公开数据，需署名 SEER；HTML 表结构改版频繁，解析器必须留 fixture 回归",
         fetch_mode="annual",
         reliability="high",
-        evidence="年龄别发病率、5 年相对/观察生存率、按分期分档的主力源；每病一个页面，需从索引页解析真实 URL",
+        evidence="B3 实测（18 页全部 200，Last-Modified 2026-04-22，合计约 1.5 MB）："
+        "SEER 自己把可抓的表标成 class=scrapeTable、id=scrapeTable_NN，但 NN 与页面出现顺序"
+        "不一致（lungb 实测 _01 _02 _04 _05 _03 _07 _08 _06），只能按文档顺序用最近的 <strong> "
+        "标题认领，不能按编号取表。八张表只有三种形状：年度序列是两行表头（4 个 metric 各 "
+        "colspan=2，第二行 Observed / Modeled Trend），分期与年龄分布是一行表头，"
+        "种族费率表压根没有 thead、6 行全是数据。量到的：年度序列跨 1975–2024 共 50 行 × "
+        "4 个 metric，但各 metric 的观测窗不一样——死亡率 Observed 50 年到 2024、发病率 SEER 8 "
+        "49 年到 2023、发病率 SEER 12 32 年（1992 起），而五年生存率 Observed 只有 44 年、"
+        "止于 2018，2019–2023 仅有 Modeled Trend 拟合值；18 页的 min 与 max 完全相等，"
+        "说明这是全站口径不是个别病缺失，落 stat_cohort 必须把 Observed 与 Modeled Trend 分成两列。"
+        "生存率分期 17/18 页有表：实体瘤是 Localized/Regional/Distant/Unknown 4 档，"
+        "NHL 与骨髓瘤是 Ann Arbor 5 档/4 档，都过 ≥3 档判据；唯独白血病整页没有分期表"
+        "（leuks.html 只有 7 张 scrapeTable，生存率是一条时间序列），只能给全分期一个数。"
+        "费率表的性别不是一律双性别：非性别特异癌才有 Males/Females 两张表与 <h5> 标签，"
+        "乳腺/宫颈/卵巢/子宫体/前列腺这 5 个性别特异癌只出一张表、页面上没有性别标签，"
+        "性别仅写在口径行里（All Races, Females），所以按 targets.py 的 sex 列逐病校验。"
+        "另有 6 个种族/族裔分组。同页三套 cohort 并存："
+        "年度序列脚注是 SEER 12 + U.S. Mortality、All Races、Both Sexes，年龄发病表上方是 "
+        "SEER 21 2019–2023，年龄死亡表是 U.S. 2020–2024，落 stat_cohort 时按 metric 各记各的。"
+        "年龄分布只有 8 档宽分组（<20、20–34、35–44、45–54、55–64、65–74、75–84、>84），"
+        "未达 ≥10 档判据——画年龄分布够用，做不了 5 岁组标化率。"
+        "SEER*Explorer 底层是 2000 美国标准人口 20 个 5 岁组，另有 "
+        "source/content_writers/load_json_asset.php?asset=<name> 这个免鉴权 JSON 接口，"
+        "但它只出 UI 配置（footnote-defines、default-checkboxes 一类），真正的数据要走 "
+        "render_region_*.php 且表单参数没有公开文档。download_url 留空：入口是 18 个分页，"
+        "不是一个文件",
     ),
     Source(
         code="gbd_results",
