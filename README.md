@@ -14,12 +14,12 @@
 
 ```
 18 个恶性肿瘤基准   etl/onco_etl/targets.py
-20 个候选源登记     etl/onco_etl/sources.py   →  MySQL db_ot.source
+21 个候选源登记     etl/onco_etl/sources.py   →  MySQL db_ot.source
 可达性探针          ops\etl.ps1 probe-reach   →  MySQL db_ot.source_probe_log
 专项覆盖度探针      ops\etl.ps1 probe         →  MySQL db_ot.source_probe_log
 ```
 
-20 个源全部可达（18 个直连、2 个需代理）。已过出口判据的三维：
+21 个源全部可达（19 个直连、2 个需代理）。已过出口判据的三维：
 
 - **器官树**——SEER 的 ICD-O-3 Site Recode 码表一份文件同时供 anatomy 与 histology：
   82 个 site recode / 332 个拓扑码 / 806 个形态学码，18 病 18/18 挂载到器官级分组。
@@ -35,7 +35,9 @@
 5 岁组这一档由 IARC 的 GCO 补上，两个入口都匿名直连：Cancer Today 给中国 18 病的国家级例数、
 世界标化率与累积风险（无年龄维、一版一个年份），Cancer Over Time 给 2002–2017 × 18 个 5 岁档 ×
 三性别的年龄别率。两条限定随数值一起落库——中国这一路只有发病没有死亡，且是 5 个登记处覆盖约 60%
-人口的外推，不与 Today 的全国估算相减。死亡年龄段的中国那一半仍空，等 WHO GHO 探针再定。
+人口的外推，不与 Today 的全国估算相减。死亡年龄段的中国那一半仍空：备选的 WHO GHO 已实测排除
+（AGEGROUP 与 GHECAUSES 两维都齐，可带这两维的 8 个指标只有区域与收入组聚合、中国零行，
+而有中国行的 14 个指标一个都没有年龄维），这一维只剩 IHME 注册账号一条路。
 
 已确认的硬结论：症状维在常见上皮癌上**没有任何公开机器可读源可用**——MONDO 的
 UBERON 定位与 HP 症状注释各只有约 1% 覆盖，HPO/Orphanet/NCIt 的实测覆盖见
@@ -45,7 +47,7 @@ UBERON 定位与 HP 症状注释各只有约 1% 覆盖，HPO/Orphanet/NCIt 的�
 
 ```
 ┌─ 采集层 etl/onco_etl/ ───────────┐   ┌─ 服务层（待建）─────────────────┐
-│ sources.py   20 个候选源登记表    │   │ FastAPI :8000                   │
+│ sources.py   21 个候选源登记表    │   │ FastAPI :8000                   │
 │ targets.py   18 病基准清单        │→MySQL→│  /api/*        查询与反查     │
 │ fetch.py     直连→代理三态取数    │ db_ot │  /             托管前端 dist  │
 │ raw.py       data/raw 归档+sha256 │   │ MySQL db_ot (localhost:3306)    │

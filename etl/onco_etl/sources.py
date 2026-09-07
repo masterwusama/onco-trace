@@ -352,6 +352,42 @@ SOURCES: tuple[Source, ...] = (
         "不能与 Cancer Today 的国家级估算并成一条曲线",
     ),
     Source(
+        code="who_gho",
+        name="GHO OData API（WHO 全球卫生估计 GHE）",
+        org="WHO",
+        source_type="statistics",
+        dimensions=("stat",),
+        home_url="https://www.who.int/data/gho/info/gho-odata-api",
+        download_url="https://ghoapi.azureedge.net/api/SDG_SH_DTH_RNCOM?"
+        "$filter=SpatialDim%20eq%20'CHN'&$top=5&$count=true&$format=json",
+        license="CC BY-NC-SA 3.0 IGO",
+        commercial_use=False,
+        legal_note="WHO 内容 CC BY-NC-SA 3.0 IGO：需署名、禁商用、同条款共享；terms-of-use 页"
+        "明写教学/非商用以外的用途须事先书面授权。引用必须带指标码与年份，"
+        "且 GHE 是模型估计而非登记处观测，不与 SEER/GCO 的观测数并表",
+        fetch_mode="annual",
+        reliability="medium",
+        evidence="B3 实测（这一维原本指望它补中国死亡年龄组）：计划里写的 Athena API"
+        "（apps.who.int/gho/athena/api/…）已整条 302 到 www.who.int/data/gho/legacy，"
+        "后继是 ghoapi.azureedge.net/api 的 OData，匿名无 key、每个指标一个实体集，"
+        "$metadata 12 MB 所以取数只能点名；网关把 $top 硬限在 1000（超了回 400，"
+        "原因只在响应体里）。可达性分两档：$top=5 的单指标小查询直连 200，"
+        "而逐指标翻页的整趟探针有一步落代理（504 与连接重置都出现过），"
+        "所以 probe-reach 记 direct、专项探针记 proxy。"
+        "形状完全合判据：Dim1/Dim2/Dim3 带 SEX、AGEGROUP、GHECAUSES（列序逐指标不同，"
+        "必须按 DimNType 认领），AGEGROUP 维有 YEARS00-04…YEARS80-84 + 85PLUS 共 17 档"
+        "成体系的 5 岁阶梯。缺的是国家级行：带死因维的 22 个指标里只有 14 个有 CHN 行，"
+        "其中带 ≥10 个年龄组的 0 个——有中国行的这些指标只有 SEX 与死因两维；"
+        "反过来形状最合的 8 个（GHE_DALY*/YLL*/YLD*、MORT_600/700）SpatialDimType 只有 "
+        "MGHEREG，SpatialDim eq 'CHN' 零行，只有区域与收入组聚合。"
+        "能取到的中国癌种数最细只到 GHE061「Malignant neoplasms」一档合计"
+        "（SDG_SH_DTH_RNCOM 240 行 = 2000-2019 × 3 性别 × 4 个大组，无年龄）。"
+        "另一条独立上限：GHECAUSES 159 档里 GHE061–GHE079 只 19 个癌种档，18 病仅 13 病"
+        "能一对一——肾/脑/甲状腺合并在 GHE078、NHL 与骨髓瘤共用 GHE076，"
+        "所以即使将来放出国家级×年龄组，这一路也只到 13/18。"
+        "18 病 × 年龄组 × 中国死亡数在这一路上实测 0/18，缺口没被填上",
+    ),
+    Source(
         code="gwas_catalog",
         name="GWAS Catalog 全量关联",
         org="EBI",
