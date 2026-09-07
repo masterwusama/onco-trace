@@ -299,16 +299,57 @@ SOURCES: tuple[Source, ...] = (
     ),
     Source(
         code="globocan",
-        name="GLOBOCAN / Global Cancer Observatory",
+        name="GCO Cancer Today (GLOBOCAN estimates)",
         org="IARC / WHO",
         source_type="statistics",
         dimensions=("stat",),
-        home_url="https://gco.iarc.who.int/",
+        home_url="https://gco.iarc.who.int/today/",
+        download_url="https://gco-api.iarc.fr/api/globocan/v3/2024/"
+        "factsheet/population/156/?group_CRC=1&include_nmsc=1&include_nmsc_other=1",
         license="IARC terms",
-        legal_note="IARC 数据需署名，部分表仅提供在线工具导出；中国口径历史上多为 PDF，探针要判定能否机器可读",
+        legal_note="IARC 数据需署名 GLOBOCAN / IARC；一次性估算数据集，可商用未见限制，"
+        "但引用必须带版本与估算方法码（本版中国 incidence=2b）",
         fetch_mode="annual",
-        reliability="medium",
-        evidence="国家层面发病/死亡，用于与 SEER（美国）并排展示口径差异，不与之混算",
+        reliability="high",
+        evidence="B3 实测：真实入口是 gco-api.iarc.fr 的 JSON，匿名直连、无 token 无登录门。"
+        "路径里的版本号 2024 不是常量，写在前端 bundle 的 data_version 里，探针从那里读。"
+        "中国 country=156（按 iso3=CHN 认，别硬写数字）；一次 factsheet 请求回 279 行 = "
+        "sex 0/1/2 × type 0 新发/1 死亡/2 现患 × 34 个癌种码，每行带 total / asr（世界标化）"
+        "/ crude_rate / cum_risk_74，18 病全部配得上。码表另给 meta/cancers(41 档，带 ICD 段) "
+        "与 meta/populations(238 地点，带 method_incidence 等估算方法码) "
+        "与 meta/update(14 个历史版本)。"
+        "两条限制：这一路完全没有年龄维（路径末段实测是癌种过滤器，ages_specific=1 无效）；"
+        "一版只有一个年份，meta/update 那 14 个版本每步都换估算口径，拼不出趋势线。"
+        "另注意现患 type=2 在一个 (sex,cancer) 上有 3 行而不带期间标签（1/3/5 年混在一起），"
+        "取数前必须回响应的 description 读口径。年龄别与逐年由 gco_overtime 顶上",
+    ),
+    Source(
+        code="gco_overtime",
+        name="GCO Cancer Over Time (registry time series)",
+        org="IARC / WHO",
+        source_type="statistics",
+        dimensions=("stat",),
+        home_url="https://gco.iarc.who.int/overtime/",
+        download_url="https://gco-api.iarc.fr/api/overtime/v2/22/"
+        "data/rate/0/0_1_2/156/all/",
+        license="IARC terms",
+        legal_note="同上需署名；这是登记处汇编的观测序列而非模型估算，引用必须带"
+        "inc_cov / inc_period / inc_source 三个口径字段，中国是抽样登记格外推",
+        fetch_mode="annual",
+        reliability="high",
+        evidence="B3 实测：与 Cancer Today 同门户但是另一个数据库、另一套癌种码"
+        "（肺 11、结直肠 106、NHL 26=「C82-86,C96」、骨髓瘤 27=「C88+C90」——"
+        "同一个 C88 在 Today 归 NHL、在这里归骨髓瘤，所以两列码分开声明在 targets.py）。"
+        "API base 与版本 22 都写死在前端 chunk-vendors 里，探针从 bundle 读；"
+        "5 岁档标签（0-4…85+ 共 18 档）在 index bundle 里。"
+        "中国一次请求回 1248 行 = 16 个年度 2002-2017 × sex 0/1/2 × 28 个癌种码，"
+        "每行带 ages（18 档计数 + unk）/ populations（同构分母）/ age_specific_rate（同构率）"
+        "再加 asr / asr_e / asr_e2013 / asr_n / cum_risk_74 / cum_risk_79，"
+        "18/18 病全过——这正是 SEER（只有 8 档宽组）与 GBD（数值全在登录门后）都没给的"
+        "≥5 年 × ≥10 年龄组。两条硬限定：中国 mortality=false，type=1 实测 0 行，"
+        "死亡年龄段这一路没有；且 bool_national=False、inc_cov=0.6，"
+        "inc_source 明写上海/嘉善/中山/哈尔滨南岗等 5 个登记处，是子 national 口径，"
+        "不能与 Cancer Today 的国家级估算并成一条曲线",
     ),
     Source(
         code="gwas_catalog",
