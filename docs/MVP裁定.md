@@ -52,8 +52,10 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"。矩阵本身�
 - 官方口径：GBD Results 工具页写着 "We require all users to create an account in order to
   search and download GBD data."，配套说明在 <https://www.healthdata.org/account-support>
   ——注册才能检索下载；**商用不在非商用条款内**，需联系 IHME Client Services 谈许可。
-- 实际入口：`https://vizhub.healthdata.org/gbd-results/`（或 gbd-compare）顶栏
-  **Account 菜单 → Register**。窄屏下顶栏收进汉堡按钮，菜单不展开就看不到这一项。
+- 实际入口：`https://vizhub.healthdata.org/gbd-results/`（或 gbd-compare）打开即弹一个
+  "要下载估算并访问其他功能，请注册并登录"的对话框，卡上有 **注册** / **登录** 两个按钮和条款链接——
+  这是最短的一条路，不必去找顶栏菜单。窄屏下顶栏收进汉堡按钮，
+  Account 菜单里的 Login / Register 是同一件事的第二条路。
 - 登录与注册是同一条流：Account 菜单的 Login 与 Register 都调 MSAL 的 `loginPopup`，
   Register 只是多带一个 `state={"mode":"signup"}`。授权服务器
   `https://login.healthdata.org/a07655f6-e482-42f3-8b30-6b7d009f813d/B2C_1A_SIGNUP_SIGNIN`
@@ -65,6 +67,9 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"。矩阵本身�
 - 三条走不通的路，别再试：不带 `code_challenge` → `AADB2C99059`；用 v1 端点
   `.../oauth2/authorize` → `AADB2C90012`（这个 scope 只认 v2）；用 implicit
   （`response_type=token`）→ `AADB2C90057`（应用未开隐式流）。
+  第四条：在 authorize 链接后面硬加 `&link_type=signup` 去 GET，回的是 "We can't sign you in"
+  错误页——自助注册卡只由那张登录卡片以 POST 触发。所以注册这一步只能人从站内点进去，
+  探针与脚本都代不了。
   手工拼的链接能打开注册卡但换不到 token（code_verifier 不在 MSAL 缓存里），
   所以**要走站内那条**，别收藏手工链接。
 - 凭据落地：`.env.example` 已加 `IHME_USER` / `IHME_PASS` 占位（不进仓库）。

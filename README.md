@@ -16,7 +16,7 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"，两个产出�
 21 个候选源的 `status` 已从占位的 `candidate` 翻成 12 `active` / 8 `paused` / 1 `rejected`。
 后端与前端尚未开工——建哪几张业务表以 `docs/MVP裁定.md` 那张表为准。
 唯一还卡着人的前置是 IHME 的免费非商用账号：注册入口已实测定位
-（vizhub 顶栏 Account → Register，没有独立注册页），账号到位前 `gbd_results` / `gbd_cra`
+（GBD Results 页一打开就弹注册对话框，顶栏 Account → Register 是同一条流的第二条路；没有独立注册页），账号到位前 `gbd_results` / `gbd_cra`
 两支探针记 `paused`，中国死亡年龄组与危险因素归因强度（PAF）这两半留空。
 
 ```
