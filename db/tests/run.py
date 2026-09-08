@@ -6,7 +6,7 @@
     python db/tests/run.py migrate              应用 db/migrations 下未执行的迁移
     python db/tests/run.py apply <file.sql>     直接执行脚本（无事务，用于 schema/seed）
     python db/tests/run.py test  <file.sql>     单连接顺序执行，扫 PASS/FAIL，有 FAIL 则退出码 1
-    python db/tests/run.py status               查看迁移、表行数与 P0 门禁
+    python db/tests/run.py status               查看迁移、表行数与门禁（P0 授权 / P1 出处列与 DDL 一致性）
 """
 from __future__ import annotations
 
@@ -24,8 +24,29 @@ import pymysql
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS = ROOT / "db" / "migrations"
 
-# P0 的四张表；业务表进来后加到这里，status 才有意义
-TABLES = ("source", "dataset_release", "source_probe_log", "etl_job_log", "db_migration")
+# P0 的四张表；业务表（P1 的 C1c）加在 BUSINESS_TABLES 里，status 才有意义
+PROBE_TABLES = ("source", "dataset_release", "source_probe_log", "etl_job_log", "db_migration")
+BUSINESS_TABLES = (
+    "disease",
+    "anatomy_node",
+    "disease_anatomy",
+    "histology_code",
+    "disease_histology",
+    "symptom",
+    "risk_factor",
+    "disease_risk_factor",
+    "stat_fact",
+    "survival",
+    "trial",
+    "publication",
+    "target",
+    "disease_target",
+    "drug",
+)
+TABLES = PROBE_TABLES + BUSINESS_TABLES
+
+# 每张业务表都要带这五列：任何一个数都得能回答"哪个源的哪个版本、怎么解析出来的、人看过没有"
+PROVENANCE = ("source_id", "dataset_release_id", "extract_method", "review_status", "loaded_at")
 
 
 def load_env() -> dict:
@@ -187,6 +208,29 @@ def cmd_migrate(conn) -> int:
     return 0
 
 
+DDL_START = "-- 疾病主档"
+
+
+def ddl_drift() -> str:
+    """schema.sql 的业务表段与 0002 迁移不一致时返回一句说明，一致返回空串。"""
+    files = {
+        "db/schema.sql": ROOT / "db" / "schema.sql",
+        "0002 迁移": MIGRATIONS / "0002_business_tables.sql",
+    }
+    blocks = {}
+    for label, p in files.items():
+        if not p.exists():
+            return f"{label} 不存在（{p}），没法比对业务表 DDL"
+        text = p.read_text(encoding="utf-8")
+        i = text.find(DDL_START)
+        if i < 0:
+            return f"{label} 里找不到业务表段起点 {DDL_START}"
+        blocks[label] = text[i:].rstrip()
+    if blocks["db/schema.sql"] != blocks["0002 迁移"]:
+        return "业务表 DDL 两边不一致，改结构要 db/schema.sql 与 0002 迁移一起改"
+    return ""
+
+
 def cmd_status(conn) -> int:
     cur = conn.cursor()
     cur.execute("SHOW TABLES")
@@ -195,10 +239,10 @@ def cmd_status(conn) -> int:
     print("迁移：" + (", ".join(done) if done else "无"))
     for t in TABLES:
         if t not in have:
-            print(f"  {t:<18} 缺失 —— 先跑 python db/tests/run.py apply db/schema.sql")
+            print(f"  {t:<20} 缺失 —— 先跑 python db/tests/run.py apply db/schema.sql")
             continue
         cur.execute(f"SELECT COUNT(*) FROM `{t}`")
-        print(f"  {t:<18} {cur.fetchone()[0]:>8}")
+        print(f"  {t:<20} {cur.fetchone()[0]:>8}")
     cur.execute("SHOW FULL TABLES WHERE Table_type='VIEW'")
     print("视图：" + (", ".join(r[0] for r in cur.fetchall()) or "无"))
 
@@ -213,7 +257,31 @@ def cmd_status(conn) -> int:
         print(f"P0 门禁：legal_note 空缺 {blank} 条（必须为 0）；待探针裁定 {cand} 条")
         if blank:
             return 1
-    return 0
+
+    # P1 门禁之一：业务表少一列出处，就等于给"这个数哪来的"留下一张没法回答的表
+    gaps = []
+    for t in BUSINESS_TABLES:
+        if t not in have:
+            continue
+        cur.execute(
+            "SELECT `COLUMN_NAME` FROM information_schema.COLUMNS"
+            " WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = %s",
+            (t,),
+        )
+        cols = {r[0] for r in cur.fetchall()}
+        miss = [c for c in PROVENANCE if c not in cols]
+        if miss:
+            gaps.append(f"{t}(缺 {','.join(miss)})")
+    print(f"P1 门禁：业务表出处列缺失 {len(gaps)} 张（必须为 0）{'：' + '、'.join(gaps) if gaps else ''}")
+
+    # P1 门禁之二：schema.sql 的业务表段与 0002 迁移是手抄的两份，
+    # 一份改了一份没改，"全新库"和"已有库"就会长成两个形状，而两边的迁移都不会报错
+    drift = ddl_drift()
+    if drift:
+        print(f"P1 门禁：{drift}")
+    else:
+        print("P1 门禁：schema.sql 业务表段与 0002 迁移一致")
+    return 1 if gaps or drift else 0
 
 
 def main(argv: list[str]) -> int:

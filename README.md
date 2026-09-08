@@ -7,17 +7,22 @@
 数据全部来自公开源抓取，仓库里没有人工录入模块。每个数字都带来源、口径与查阅时间；
 本站不做诊断，症状反查输出的是参考排序。
 
-## 当前进度：P0 已收口，下一步 P1 建表
+## 当前进度：P0 收口、业务表已建齐，下一步是装载
 
 P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"，两个产出都已在仓库里：
 [docs/数据源覆盖度.md](docs/数据源覆盖度.md)（13 列 × 16 份裁定，由
 `cd etl && python -m onco_etl matrix` 从 `source_probe_log` 自动生成）与
 [docs/MVP裁定.md](docs/MVP裁定.md)（逐维裁进/不进、以什么口径进、缺的那半在页面上怎么显示）。
 21 个候选源的 `status` 已从占位的 `candidate` 翻成 12 `active` / 8 `paused` / 1 `rejected`。
-后端与前端尚未开工——建哪几张业务表以 `docs/MVP裁定.md` 那张表为准。
-唯一还卡着人的前置是 IHME 的免费非商用账号：注册入口已实测定位
-（GBD Results 页一打开就弹注册对话框，顶栏 Account → Register 是同一条流的第二条路；没有独立注册页），账号到位前 `gbd_results` / `gbd_cra`
-两支探针记 `paused`，中国死亡年龄组与危险因素归因强度（PAF）这两半留空。
+15 张业务表已按这份裁定建好并落库（`db/migrations/0002_business_tables.sql`，与 `db/schema.sql`
+同内容）。每张表的每一列都对着 `source_probe_log` 里的 `fields_seen` 与 `sample` 来——
+探针没量到的字段不建列，源给出口径差别的地方拆成列存而不是混成一列。下一步是装载器（把探针里
+已验证的解析规则改成写库）与后端、前端。
+P0 只剩一件收尾的事：IHME 的免费非商用账号已注册、凭据已填进 `.env`，但数值入口的登录是
+Azure AD B2C 换 token（scope `…/data-api/data.read`，界面前还有一层 Cloudflare），这条取数路还没实现。
+接上之前 `gbd_results` / `gbd_cra` 两支探针记 `paused`，中国死亡年龄组与危险因素归因强度（PAF）
+这两半留空。注册入口也已实测定位（GBD Results 页一打开就弹注册对话框，顶栏 Account → Register
+是同一条流的第二条路；没有独立注册页）。
 
 ```
 18 个恶性肿瘤基准   etl/onco_etl/targets.py
@@ -132,7 +137,7 @@ ops\etl.ps1 probe             # 专项覆盖度探针，不带 --code 就是全�
 ## 常用命令
 
 ```powershell
-python db/tests/run.py status            # 表行数 + legal_note 门禁
+python db/tests/run.py status            # 表行数 + 三道门禁（源授权 / 业务表出处列 / 两份 DDL 一致）
 python etl/tests/run.py                  # 解析回归，用仓库内的上游页面，不联网
 ops\etl.ps1 probe-reach --code mondo     # 只探指定源的可达性
 ops\etl.ps1 probe --list                 # 有哪些专项探针
@@ -148,7 +153,7 @@ ops\etl.ps1 status                       # 库现状速览
 
 | 目录 | 内容 |
 |---|---|
-| `db/` | `schema.sql` 是全量建表脚本，`migrations/` 是增量变更，`tests/run.py` 是迁移与断言跑测器 |
+| `db/` | `schema.sql` 是全量建表脚本，`migrations/` 是增量变更（`0002` 是 15 张业务表，DDL 与 `schema.sql` 那段同内容、改结构两边一起改，`status` 会比对），`tests/run.py` 是迁移与断言跑测器 |
 | `etl/` | `onco_etl` 采集与探针层，`python -m onco_etl` 运行；`--offline` 重放读本机 `data/raw/` 归档 |
 | `etl/tests/` | 解析回归：`fixtures/` 存代表页的上游原样字节，`run.py` 先比 sha256 再断言解析结果 |
 | `docs/` | `数据源探针计划.md`（判据与逐批实测）、`数据源覆盖度.md`（脚本生成，勿手改）、`MVP裁定.md`（P0 出口：建哪些表） |
@@ -157,7 +162,8 @@ ops\etl.ps1 status                       # 库现状速览
 
 ## 四条约定
 
-1. `etl/` 与后端互不引用，只通过 MySQL 表结构对话。`db/schema.sql` 是唯一契约，两侧都不生成 schema。
+1. `etl/` 与后端互不引用，只通过 MySQL 表结构对话。`db/schema.sql` 是唯一契约，`migrations/` 只把
+   已有库前进到它的同一终态（业务表段两边同内容，`status` 逐字比对），两侧都不生成 schema。
 2. 改表结构一律新增 `db/migrations/NNNN_*.sql`，并在注释里写清改的理由。
 3. 写库的时间戳由应用层以本地墙钟格式（`YYYY-MM-DD HH:MM:SS`）写入，一律走 `onco_etl.clock`。
    本机是 UTC+8，带 `Z` 的串会被 MySQL 按字面量存成 UTC 时刻，跨午夜的采样会错位一天。

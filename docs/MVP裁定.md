@@ -42,10 +42,13 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"。矩阵本身�
 
 ## 三、五项悬置的收口
 
-### 1. IHME 注册账号（唯一还卡着人的前置）
+### 1. IHME 账号与取数路（账号已就位，仍卡着人——换 token 只能浏览器里点）
 
-裁定是"开，两维一起补"（死亡年龄组 + 危险因素归因强度）。账号还没注册，
-`gbd_results` / `gbd_cra` 两行的状态是 `paused`，等凭据进 `.env` 后重跑这两支探针。
+裁定是"开，两维一起补"（死亡年龄组 + 危险因素归因强度）。**账号已注册、凭据已进 `.env`**
+（2026-09-08 实测两个键都是非空真值）。前置因此从"等人注册"换成"等取数路实现"：
+`gbd_results` / `gbd_cra` 两行的状态仍是 `paused`，要接的是"人在浏览器里登录换到 token、
+脚本带着 token 取数"这一段——已实测 `authorize` 只认 v2 端点加 PKCE 授权码流，隐式流被拒，
+所以换 token 这步代不了浏览器，探针只能吃换回来的 token。
 
 注册入口已实测定位（2026-09-08）。**没有独立的注册页**，这就是找不到入口的原因：
 
@@ -72,7 +75,8 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"。矩阵本身�
   探针与脚本都代不了。
   手工拼的链接能打开注册卡但换不到 token（code_verifier 不在 MSAL 缓存里），
   所以**要走站内那条**，别收藏手工链接。
-- 凭据落地：`.env.example` 已加 `IHME_USER` / `IHME_PASS` 占位（不进仓库）。
+- 凭据落地：`.env.example` 有 `IHME_USER` / `IHME_PASS` 占位（不进仓库），本机 `.env` 已填真值
+  （2026-09-08 实测两键非空且不是占位串）。凭据在库里不等于取数路通——上面那段换 token 还没实现。
 
 ### 2. WHO / GBD 的非商用边界
 
@@ -140,3 +144,34 @@ assoc 17,064 / lit 724,160 / drugs 1,036）。代价如实记在 `targets.py`：
   18 页的覆盖裁定还是要实跑重取。
 - **CMeSH 中文医学主题词表**（IMICAMS 维护、NLM 有分发）是唯一没测过的中文症状名候选，
   可达性与许可都未测。它是 P1 之后要补中文名列时的第一站，本裁定不含它。
+
+## 五、C1c 落库形状：维度 → 表
+
+§一 那 17 行裁定，落到 `db/migrations/0002_business_tables.sql` 的 15 张表上是这样：
+
+| 维度 | 表 | 裁定里那句口径落在哪一列 |
+|---|---|---|
+| 身份与 ID 主干 | `disease` | 一行一病，是 `targets.py` 的库内镜像加 MONDO 实测解析结果；`ncit_id` 是跨源枢纽，`xrefs json` 装稀疏码 |
+| 关联器官 | `anatomy_node` + `disease_anatomy` | `anatomy_node.kind` 分 site_recode 与亚部位 term，`disease_anatomy.role` 分 primary 与 subsite，`basis` 记挂载依据（ICD-O-3 相交 / MONDO 的 ICD-9 xref） |
+| 组织学 | `histology_code` + `disease_histology` | `basis='via_site_recode'`——这个映射是自己从交叉表推出来的，不是源说过 |
+| 症状清单 + 中文名 | `symptom` | 按源分行，`name_lang` 分 en/zh；`source_id`、`source_url`、`anchor` 随行，可点回原文 |
+| 危险因素（遗传那一层） | `risk_factor` + `disease_risk_factor` | `role` 分 genetic/exposure，`uri_tier` 分主条目与声明档，`p_value_text` 与 `pvalue_mlog` 两列分开存 |
+| 发病量 / 年龄组 / 趋势 | `stat_fact`（长表） | `estimate_basis` 就是"两列分开存、不可相减成趋势"那一句的落点 |
+| 五年存活率 | `survival` | `stage_scheme` 分 SEER 汇总档与 Ann Arbor，`is_observed` 分开观测值与拟合值 |
+| 在招试验 | `trial` | 只建 CT 白名单实测到的列，没有日期列 |
+| 前沿文献 | `publication` | `ext_key` 是 UPSERT 键（pmid→doi→标题哈希），计数走 `stat_fact` 的 `query_count` |
+| 靶点 / 药 | `target` + `disease_target` + `drug` | `node_used` 记下这个病用的是宽档还是主条目 |
+| 五路反查 | 复用上面各表，无独立表 | `symptom` 上另有 `idx_symptom_lookup`，反查按 `name_lang` 分组 |
+
+没有表的维：叙述/介绍段（裁成不进 MVP，所以不是"一列空着"而是整个维缺席）、
+中国死亡年龄组与 PAF（`stat_fact` 里对应 metric 零行、`disease_risk_factor.paf` 空）。
+
+三条横切约定：
+
+1. 每张事实表都带 `source_id` + `dataset_release_id` + `extract_method` + `review_status` +
+   `loaded_at`。少一列就等于给"这个数哪来的"留下一张回答不了的表，`python db/tests/run.py status`
+   扫的就是这五列齐不齐。
+2. 进唯一键的列一律 `NOT NULL DEFAULT ''`（年份用 0），不用 NULL——MySQL 的唯一索引允许多个
+   NULL，装载器重跑同一份发布就会插出重复行。
+3. 建而不填的列等于页面上的空态：`symptom.freq_band`、`disease_risk_factor.paf` / `paf_basis`、
+   `anatomy_node.label_zh`、`risk_factor.label_zh`。装载器不写它们，前端按 §二 的约定显示。
