@@ -34,17 +34,21 @@ B4 的 CRA 那一半量到"关联有、强度没有"（效应量 0/18）。这�
 取数姿势：整包 73.5 MB，但这条链路单条长连接会被限速并在 ~54 MB 处断流
 （实测一次 GET 只回 53,767,694 字节且以 HTTP 200 正常收尾），所以按 8 MB 分段 Range 取，
 段短了就续。不是洁癖——不这样跑就永远拿不到完整包。
+取数与归档抽在 `load_payload` 里、行级解析抽在 `_scan` 里，判据只读它们的产出——
+`load/risks.py` 落 6 千行命中关联时不必再扫一遍包，也不必重抄一份解析。
 版本号从 `releases/<年>/<月>/` 日历目录读，`release_date` 用这份包在 FTP 上的日期
 （实测 2026-09-04），不用件内 `max(DATE ADDED TO CATALOG)`（实测 2026-09-01）：
 后者是"最后录入的关联"，是内容新鲜度，早发布日三天，拿它当发布日会让增量判定跟着错。
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
 import time
 import zipfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .. import raw
@@ -88,6 +92,37 @@ NULLS = {"", "NR", "NA", "N/A", "-"}
 # `[1.09-1.22] unit increase` 是主流形态：区间取前缀，注记另算。fullmatch 会把这种判成解析失败
 CI_HEAD = re.compile(r"^\[\s*(-?[\d.]+)\s*-\s*(-?[\d.]+)\s*\]")
 MIN_FACTORS = 3
+
+# 逐病目测（2026-09-08，读的是 `data/raw/gwas_catalog/2026-09` 那份 associations_ontology-annotated-full
+# 里命中声明档的行：每病的全部表型名种类、关联数、去异位点数，加前 5 条最强关联的
+# SNP / 效应量 / 区间 / 研究号）：code → (关联行, 去异位点, 表型名种数)。下面这三个数就是
+# 那份目测记录本身，重跑一遍探针就能再对一次。
+# 目测判的是这一维唯一的规则产物——"哪些 `MAPPED_TRAIT` 算这个病"。18 病合计 23 种表型名，
+# 逐种读过全部对得上本病：含食管那 4 种（鳞癌 / 腺癌 / carcinoma of esophagus / 未特指）
+# 本就并成一档、乳腺与子宫的 carcinoma 与 cancer 两名混用、卵巢与甲状腺只有通用名。
+# 效应量与 p 值是源里抄来的数，没有可判的东西，所以那两列不是目测对象。
+# 位点数各病合计 4,532、并集 4,493：同一位点会被多个病报，那不是重复行。
+# 装载器落库前对着这三个数核，核不上就是清单变了形状、这次读过的结论不再成立。
+EYEBALL: dict[str, tuple[int, int, int]] = {
+    "lung": (326, 302, 1),
+    "colorectum": (1426, 1012, 1),
+    "liver": (9, 8, 1),
+    "stomach": (93, 90, 1),
+    "breast_female": (2151, 1468, 2),
+    "pancreas": (183, 150, 2),
+    "esophagus": (112, 94, 4),
+    "prostate": (1230, 890, 1),
+    "cervix": (46, 42, 1),
+    "ovary": (65, 65, 1),
+    "thyroid": (47, 46, 1),
+    "bladder": (149, 85, 1),
+    "kidney": (23, 18, 1),
+    "brain": (6, 6, 1),
+    "uterus": (130, 83, 2),
+    "leukemia": (15, 11, 1),
+    "nhl": (37, 31, 1),
+    "myeloma": (160, 131, 1),
+}
 
 # 同级候选档的收法：单档 + 像肿瘤 + 器官关键词命中，且不是"暴露测量"或良性/亚型噪声档
 ORGAN_RE = {
@@ -226,11 +261,155 @@ def _member(z: zipfile.ZipFile) -> zipfile.ZipInfo:
     return hits[0]
 
 
-def probe(offline: bool = False) -> ProbeResult:
+def _locus(chr_id: str, chr_pos: str, risk_allele: str):
+    """位点独立性：优先坐标，缺坐标的（ovary 那 63 行全无 CHR_ID）退回最强 SNP-等位，
+    否则会把"有数没坐标"的病误判成"一个位点都没有"。"""
+    return (chr_id, chr_pos) if chr_id else risk_allele
+
+
+def _num(s: str) -> float:
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+def _want() -> tuple[dict[str, str], dict[str, str]]:
+    """疾病侧对齐表：`({病码: 主条目档尾段}, {尾段: 病码})`。
+
+    声明里写冒号形式（与 mondo_id / OT_NODE 一致），尾段变换留在这里——只有这一列
+    的取值形态是 `…/obo/MONDO_0008903`，不该把这个知识漏进 targets.py。
+    两条中止校验跟着这份表走：装载器同读一份声明，校验留在 `probe()` 里等于装载可以绕过它。
+    """
+    main_of = {t.code: t.mondo_id.replace(":", "_") for t in TARGETS}
+    unknown = sorted(set(GWAS_URI) - set(main_of))
+    if unknown:
+        raise SystemExit(f"targets.GWAS_URI 声明了基准外的病码 {unknown}——"
+                         "这份声明是覆盖判据的一部分，路径写错的病会永远显示成「没覆盖」")
+    want = {m: c for c, m in main_of.items()}
+    for code, uris in GWAS_URI.items():
+        for u in (x.replace(":", "_") for x in uris):
+            if u == main_of[code]:
+                continue
+            if want.get(u, code) != code:
+                raise SystemExit(f"targets.GWAS_URI 把 {u} 同时声明给 {want[u]} 与 {code}"
+                                 "——一个档只能属于一个病，否则这条关联会被两个病各数一遍")
+            want[u] = code
+    return main_of, want
+
+
+@dataclass(frozen=True)
+class Assoc:
+    """一条命中「主条目 + 声明档」的单档关联：装载器写的一行就是它，探针的按病计数也数它。
+
+    字段一律存源里的原样串（`NR` 也照存），NULL 判定与数值转换留给读它的那一方——
+    探针只问"有没有效应用得上"，装载器要往 decimal 里落，两边对同一列的口径不同，
+    但都只该扫这一遍包。
+    """
+
+    code: str
+    tier: str            # main＝命中 mondo_id 主条目，declared＝命中 targets.GWAS_URI 声明档
+    tail: str            # 命中的那个档尾段（MONDO_0008903）
+    trait: str           # MAPPED_TRAIT 原文
+    gene: str            # MAPPED_GENE 原文，整列为空时装载器退到 snps
+    snps: str
+    risk_allele: str     # STRONGEST SNP-RISK ALLELE
+    chr_id: str
+    chr_pos: str
+    freq: str
+    p_value: str
+    mlog: str
+    or_beta: str
+    ci: str
+    pubmed: str
+    study: str           # STUDY ACCESSION
+    initial: str
+    replication: str
+    has_eff: bool
+    has_ci: bool
+    order: int = 0       # 文件行序：折行时给一个确定的先后，别让结果随哈希顺序变
+
+    def assoc_key(self) -> str:
+        """幂等键含 STUDY ACCESSION 而不是 PUBMEDID：一篇文章可以登记多个研究，
+        实测按 PUBMEDID 构造会折掉 541 行、其中 496 组的研究号与 p 值都不同——那是漏写
+        不是去重。按研究号构造只剩 17 组重复，再带上 P-VALUE 只剩 2 组，而那两组只差一个
+        连接号（`[1.11–1.23]` / `[1.11-1.23]`），本就是同一条关联的两种写法，该折。"""
+        key = "|".join((self.code, self.study, self.snps, self.risk_allele, self.p_value))
+        return hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+    @property
+    def locus(self):
+        return _locus(self.chr_id, self.chr_pos, self.risk_allele)
+
+    @property
+    def effci(self) -> bool:
+        return self.has_eff and self.has_ci
+
+    @property
+    def keep_rank(self) -> tuple:
+        """撞同一个 assoc_key 时留哪一行：主条目档优先、有可解析区间优先、显著性高优先。"""
+        return (0 if self.tier == "main" else 1, 0 if self.has_ci else 1, -_num(self.mlog),
+                self.order)
+
+
+def _new_per() -> dict[str, dict]:
+    return {
+        t.code: {"main_rows": 0, "main_effci": 0, "multi_rows": 0,
+                 "main_loci": set(), "main_studies": set(), "main_traits": {},
+                 "decl_rows": 0, "decl_effci": 0,
+                 "decl_loci": set(), "decl_studies": set(), "decl_traits": {},
+                 "sib_rows": 0, "sib_effci": 0, "sib_loci": set(),
+                 "sib_studies": set(), "sib_traits": {}}
+        for t in TARGETS}
+
+
+@dataclass
+class Scan:
+    """整包扫一遍的全部产出：全表计数（探针报裁定用）+ 命中行清单（装载器落库用）。"""
+
+    rows: int = 0
+    hdr: list[str] = field(default_factory=list)
+    eff: int = 0
+    ci: int = 0
+    ci_interval: int = 0
+    both: int = 0
+    unit: int = 0
+    neg: int = 0
+    multi_uri: int = 0
+    lab_mismatch: int = 0
+    dates: list[str] = field(default_factory=list)
+    per: dict[str, dict] = field(default_factory=_new_per)
+    assocs: list[Assoc] = field(default_factory=list)
+    main_of: dict[str, str] = field(default_factory=dict)
+    want: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class GwasPayload:
+    """取包 + 扫包这一趟的产出。`blocked` 非空表示包没拿成，探针把它原样报回去。"""
+
+    scan: Scan | None = None
+    blocked: ProbeResult | None = None
+    key_dir: Path | None = None
+    version: str = "unknown"
+    size: int = 0
+    sha: str = ""
+    meta: dict = field(default_factory=dict)
+    ms: int = 0
+    proxied: list[str] = field(default_factory=list)
+    reach: str = "direct"
+
+
+def load_payload(offline: bool) -> GwasPayload:
+    pl = GwasPayload()
     reach = "offline" if offline else "direct"
     meta: dict = {}
     ms_total = 0
     proxied: list[str] = []
+    zp: Path | None = None
+    key_dir: Path | None = None
+    size = 0
+    sha = ""
 
     if offline:
         key_dir = raw.newest_dir(SOURCE, "*.zip")
@@ -256,12 +435,13 @@ def probe(offline: bool = False) -> ProbeResult:
         if head.reachability == "proxy":
             proxied.append("HEAD")
         if not head.ok or not head.declared_bytes:
-            return ProbeResult(
+            pl.blocked = ProbeResult(
                 verdict="dead" if head.status in (404, 410) else "blocked",
                 message=f"{url} → {head.status or head.reachability}：{head.note}"
                         "（连声明大小都拿不到，分段续传无从判断是否完整）",
                 criteria=CRITERIA, dataset_code=DATASET, reachability=head.reachability,
                 http_status=head.status, latency_ms=ms_total)
+            return pl
         declared = head.declared_bytes
         key_dir = raw.archive_dir(SOURCE, info["version"])
         zp = key_dir / ZIP_NAME
@@ -270,75 +450,66 @@ def probe(offline: bool = False) -> ProbeResult:
         if via:
             proxied.append("zip")
         if size != declared:
-            return ProbeResult(
+            pl.blocked = ProbeResult(
                 verdict="blocked",
                 message=f"{url} 分段取到 {size:,}/{declared:,} B 仍不完整——Range 语义或本机链路有问题，"
                         f"字段之外的结论全部作废（残包留在 {raw.rel(zp.with_name(zp.name + '.part'))}）",
                 criteria=CRITERIA, dataset_code=DATASET,
                 reachability="proxy" if proxied else "direct",
                 http_status=head.status, latency_ms=ms_total)
+            return pl
         sha = raw.sha256_file(zp)
         info["declared_bytes"] = declared
         meta = {"release": info, "zip_url": url, "via_proxy": proxied}
 
+    sc = _scan(zp)
+    if not offline:
+        (key_dir / META_NAME).write_text(
+            json.dumps({**meta, "rows": sc.rows, "cols": sc.hdr}, ensure_ascii=False, indent=1),
+            encoding="utf-8")
     rel_info = meta.get("release") or {}
     version = rel_info.get("version") or "unknown"
     proxied = meta.get("via_proxy") or proxied
-    if proxied:
-        reach = "proxy"
+    pl.scan = sc
+    pl.key_dir, pl.version, pl.size, pl.sha = key_dir, version, size, sha
+    pl.meta, pl.ms, pl.proxied = meta, ms_total, proxied
+    pl.reach = "proxy" if proxied else reach
+    return pl
 
+
+def _scan(zp: Path) -> Scan:
+    """整包扫一遍：全表计数进 `Scan` 的标量列，命中「主条目 + 声明档」的行进 `Scan.assocs`。
+
+    装载器 import 的就是这个函数。行级解析若在探针里另留一份，两边会悄悄分叉，
+    而分叉的表现形式是"探针说这一维够用，库里却没有数"。
+    """
+    sc = Scan()
+    main_of, want = _want()
+    sc.main_of, sc.want = main_of, want
+    per = sc.per
     z = zipfile.ZipFile(zp)
     mi = _member(z)
 
-    rows = 0
-    n_eff = n_ci = n_ci_interval = n_both = n_unit = n_neg = 0
-    n_multi_uri = n_lab_mismatch = 0
-    dates: list[str] = []
-    # 疾病侧对齐表：主条目 URI 尾段 → 病码，再加 targets.GWAS_URI 声明的同级档。
-    # 声明里写冒号形式（与 mondo_id / OT_NODE 一致），尾段变换留在这里——只有这一列
-    # 的取值形态是 `…/obo/MONDO_0008903`，不该把这个知识漏进 targets.py。
-    main_of = {t.code: t.mondo_id.replace(":", "_") for t in TARGETS}
-    unknown = sorted(set(GWAS_URI) - set(main_of))
-    if unknown:
-        raise SystemExit(f"targets.GWAS_URI 声明了基准外的病码 {unknown}——"
-                         "这份声明是覆盖判据的一部分，路径写错的病会永远显示成「没覆盖」")
-    want = {m: c for c, m in main_of.items()}
-    for code, uris in GWAS_URI.items():
-        for u in (x.replace(":", "_") for x in uris):
-            if u == main_of[code]:
-                continue
-            if want.get(u, code) != code:
-                raise SystemExit(f"targets.GWAS_URI 把 {u} 同时声明给 {want[u]} 与 {code}"
-                                 "——一个档只能属于一个病，否则这条关联会被两个病各数一遍")
-            want[u] = code
-    per: dict[str, dict] = {
-        t.code: {"main_rows": 0, "main_effci": 0, "multi_rows": 0,
-                 "main_loci": set(), "main_studies": set(), "main_traits": {},
-                 "decl_rows": 0, "decl_effci": 0,
-                 "decl_loci": set(), "decl_studies": set(), "decl_traits": {},
-                 "sib_rows": 0, "sib_effci": 0, "sib_loci": set(),
-                 "sib_studies": set(), "sib_traits": {}}
-        for t in TARGETS}
-
     with io.TextIOWrapper(z.open(mi.filename), encoding="utf-8", errors="replace",
                           newline="\n") as fh:
-        hdr = [h.strip() for h in fh.readline().rstrip("\n").split("\t")]
-        idx = {h: i for i, h in enumerate(hdr)}
-        missing = [c for c in (EFFECT_COL, CI_COL, URI_COL, TRAIT_COL, "STUDY ACCESSION")
+        sc.hdr = [h.strip() for h in fh.readline().rstrip("\n").split("\t")]
+        idx = {h: i for i, h in enumerate(sc.hdr)}
+        missing = [c for c in (EFFECT_COL, CI_COL, URI_COL, TRAIT_COL, "STUDY ACCESSION",
+                               "SNPS", "STRONGEST SNP-RISK ALLELE", "PUBMEDID", "MAPPED_GENE")
                    if c not in idx]
         if missing:
-            raise SystemExit(f"关联表表头里没有 {missing}（实际 {hdr}）——EBI 改了列名，"
+            raise SystemExit(f"关联表表头里没有 {missing}（实际 {sc.hdr}）——EBI 改了列名，"
                              "效应量与 CI 的填充率无从判断，别把这个结论落库")
 
         def col(r: list, name: str) -> str:
             i = idx.get(name)
             return r[i].strip() if i is not None and i < len(r) else ""
 
-        for line in fh:
+        for seq, line in enumerate(fh):
             r = line.rstrip("\n").split("\t")
-            if len(r) != len(hdr):
+            if len(r) != len(sc.hdr):
                 continue
-            rows += 1
+            sc.rows += 1
             eff, ci = col(r, EFFECT_COL), col(r, CI_COL)
             m = CI_HEAD.match(ci) if ci not in NULLS else None
             if m:
@@ -348,20 +519,20 @@ def probe(offline: bool = False) -> ProbeResult:
                 except ValueError:
                     m = None  # `[1.80-.5.00]` 这种畸形串：宁可不计数，也不猜它是 1.80–5.00
             if eff not in NULLS:
-                n_eff += 1
+                sc.eff += 1
                 if eff.startswith("-"):
-                    n_neg += 1
+                    sc.neg += 1
             if ci not in NULLS:
-                n_ci += 1
+                sc.ci += 1
             if m:
-                n_ci_interval += 1
+                sc.ci_interval += 1
             if eff not in NULLS and m:
-                n_both += 1
+                sc.both += 1
             if "unit increase" in ci or "unit decrease" in ci:
-                n_unit += 1
+                sc.unit += 1
             d = col(r, "DATE ADDED TO CATALOG")
             if d:
-                dates.append(d)
+                sc.dates.append(d)
 
             # 多值分隔符实测是逗号（96,520 行带 2~7 个 URI），不是分号。
             # 按 ";" 切会整串落成一个 token，`rsplit("/")` 取到的尾档会把
@@ -369,18 +540,17 @@ def probe(offline: bool = False) -> ProbeResult:
             uris = [x.strip() for x in re.split(r"[;,]", col(r, URI_COL)) if x.strip()]
             single = len(uris) == 1
             if not single:
-                n_multi_uri += 1
+                sc.multi_uri += 1
             joined = col(r, TRAIT_COL)
             # label 与 URI 共用逗号：两列拆出来的档数对不上，说明有的 EFO 名字自己就带逗号。
             # 所以拆分只认 URI，label 当整串用（它只进 sample 给人看）
             if len([x for x in joined.split(",") if x.strip()]) != len(uris):
-                n_lab_mismatch += 1
+                sc.lab_mismatch += 1
             short = [u.rsplit("/", 1)[-1] for u in uris]
             hit = [want[s] for s in short if s in want]
-            # 位点独立性：优先坐标，缺坐标的（ovary 那 63 行全无 CHR_ID）退回最强 SNP-等位，
-            # 否则会把"有数没坐标"的病误判成"一个位点都没有"
-            locus = (col(r, "CHR_ID"), col(r, "CHR_POS")) if col(r, "CHR_ID") \
-                else col(r, "STRONGEST SNP-RISK ALLELE")
+            chr_id, chr_pos, risk_allele = (col(r, "CHR_ID"), col(r, "CHR_POS"),
+                                            col(r, "STRONGEST SNP-RISK ALLELE"))
+            locus = _locus(chr_id, chr_pos, risk_allele)
             effci = bool(m) and eff not in NULLS
             study = col(r, "STUDY ACCESSION")
 
@@ -396,6 +566,16 @@ def probe(offline: bool = False) -> ProbeResult:
                     # 换声明不该把"主条目本身有没有数"这件事抹掉，那两个数都要能看见
                     is_main = short[0] == main_of[code]
                     label = joined[:60]
+                    sc.assocs.append(Assoc(
+                        code=code, tier="main" if is_main else "declared", tail=short[0],
+                        trait=joined, gene=col(r, "MAPPED_GENE"), snps=col(r, "SNPS"),
+                        risk_allele=risk_allele, chr_id=chr_id, chr_pos=chr_pos,
+                        freq=col(r, "RISK ALLELE FREQUENCY"), p_value=col(r, "P-VALUE"),
+                        mlog=col(r, "PVALUE_MLOG"), or_beta=eff, ci=ci,
+                        pubmed=col(r, "PUBMEDID"), study=study,
+                        initial=col(r, "INITIAL SAMPLE SIZE"),
+                        replication=col(r, "REPLICATION SAMPLE SIZE"),
+                        has_eff=eff not in NULLS, has_ci=bool(m), order=seq))
                     p["decl_rows"] += 1
                     p["decl_traits"][label] = p["decl_traits"].get(label, 0) + 1
                     if is_main:
@@ -424,6 +604,21 @@ def probe(offline: bool = False) -> ProbeResult:
                     p["sib_studies"].add(study)
                 key = f"{short[0]}|{joined[:50]}"
                 p["sib_traits"][key] = p["sib_traits"].get(key, 0) + 1
+    return sc
+
+
+def probe(offline: bool = False) -> ProbeResult:
+    pl = load_payload(offline)
+    if pl.blocked:
+        return pl.blocked
+    sc = pl.scan
+    per = sc.per
+    rows, hdr, dates = sc.rows, sc.hdr, sc.dates
+    n_eff, n_ci, n_ci_interval, n_both = sc.eff, sc.ci, sc.ci_interval, sc.both
+    n_unit, n_neg, n_multi_uri, n_lab_mismatch = sc.unit, sc.neg, sc.multi_uri, sc.lab_mismatch
+    size, version, key_dir, sha = pl.size, pl.version, pl.key_dir, pl.sha
+    meta, ms_total, proxied, reach = pl.meta, pl.ms, pl.proxied, pl.reach
+    rel_info = meta.get("release") or {}
 
     out = []
     for t in TARGETS:
@@ -453,11 +648,6 @@ def probe(offline: bool = False) -> ProbeResult:
     declared_only = [v["code"] for v in out if v["pass_declared"] and not v["pass_main"]]
     missing = [v["code"] for v in out if not v["pass_declared"]]
     multi_hit = sum(p["multi_rows"] for p in per.values())
-
-    if not offline:
-        (key_dir / META_NAME).write_text(
-            json.dumps({**meta, "rows": rows, "cols": hdr}, ensure_ascii=False, indent=1),
-            encoding="utf-8")
 
     msg = (
         f"效应量这一半通了、可干预暴露那一半没通：匿名整包（{size:,} B / {rows:,} 行 / {len(hdr)} 列）里 "

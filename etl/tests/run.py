@@ -11,10 +11,12 @@ fixture 是上游原样字节（`etl/tests/fixtures/` 在 `.gitattributes` 里�
 归档该不该进仓库是按体积逐源判的：MONDO 51 MB、GWAS 整包 71 MB 不进，
 SEER 四页 340 KB 进——判据分支每支有一页在场上就够。
 
-症状那一页是唯一的例外，它不吃 fixture：三源的归档（PDQ 88 KB、WHO 27 KB、维基条目）都在
-`data/raw` 里而不进仓库，而它要锁的是装载器那两条判定规则的**行为**，不是上游字节，
-所以输入是合成的解析记录。真归档里的条数由装载器自己在跑库时报出来核对
-（`load --code symptoms` 的 message 就是那份对账单）。
+症状与危险因素两页都不吃 fixture。前者的三份归档（PDQ 88 KB、WHO 27 KB、维基条目）与后者的
+两份归档（GWAS 整包、CRA 交叉表）都在 `data/raw` 里而不进仓库，而这两页要锁的是装载器判定
+规则的**行为**（症状的归一与剔非症状、危险因素的幂等键粒度与档位/占位符口径），不是上游字节，
+所以输入是合成的解析记录。真归档里的数由装载器自己在跑库时报出来核对
+（`load --code symptoms` 与 `load --code risks` 的 message 就是那份对账单，
+两份 EYEBALL 声明还会在数漂移时直接中止装载）。
 """
 from __future__ import annotations
 
@@ -31,9 +33,10 @@ for _s in (sys.stdout, sys.stderr):
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "etl"))
 
-from onco_etl.load import anatomy, symptoms  # noqa: E402
+from onco_etl.load import anatomy, risks, symptoms  # noqa: E402
 from onco_etl.targets import TARGETS  # noqa: E402
 from onco_etl.probes import mondo  # noqa: E402
+from onco_etl.probes import gbd_cra, gwas_catalog  # noqa: E402
 from onco_etl.probes import nci_pdq_html, who_factsheet, wikidata  # noqa: E402
 from onco_etl.probes import seer_statfacts as seer  # noqa: E402
 
@@ -220,8 +223,129 @@ def check_symptoms(c: Checks) -> None:
     c.eq("WHO 没有症状节就是空", who_factsheet.sym_heading({"sections": ["重要事实", "概述"]}), "")
 
 
+def check_risks(c: Checks) -> None:
+    """危险因素装载的口径。输入是合成的 Assoc / Factor 与手搓的 Risk 表：这一维的坑全在
+    "一行该是什么"与"哪些行算这个病"，跟上游字节无关，而两份真归档（GWAS 整包 71 MB、
+    CRA 交叉表）都不进仓库。真归档里的数由装载器跑库时自己报出来核对。"""
+    def a(**kw):
+        base = dict(code="lung", tier="main", tail="MONDO_0005238", trait="lung cancer",
+                    gene="CHRNA5", snps="rs1", risk_allele="rs1-A", chr_id="15",
+                    chr_pos="78885724", freq="0.34", p_value="1E-8", mlog="8.0",
+                    or_beta="1.2", ci="[1.1-1.3]", pubmed="111", study="GCST001",
+                    initial="", replication="", has_eff=True, has_ci=True)
+        base.update(kw)
+        return gwas_catalog.Assoc(**base)
+
+    def kept(rows):
+        return risks.kept_assocs(rows)
+
+    # 幂等键的粒度是"一条关联"：一篇论文登记两个研究是两条（实测按 PUBMEDID 构造会把
+    # 496 组这样的关联折掉），同一研究按两个 p 值报同一位点也是两条
+    c.eq("assoc 一论文两研究不折行", len(kept([a(study="GCST001"), a(study="GCST002")])), 2)
+    c.eq("assoc 同研究两个 p 值算两条", len(kept([a(p_value="1E-8"), a(p_value="3E-7")])), 2)
+    # 只有只差一个连接号写法的那一组才该折，且留哪条由 keep_rank 定，不随行序变
+    dash = a(ci="[1.11–1.23]", has_ci=False, order=0)
+    plain = a(ci="[1.11-1.23]", has_ci=True, order=5)
+    c.eq("assoc 只差连接号折成一条", len(kept([dash, plain])), 1)
+    c.eq("assoc 折行留可解析区间那条", [x.ci for x in kept([dash, plain])], ["[1.11-1.23]"])
+    c.eq("assoc 折行结果与行序无关", [x.ci for x in kept([plain, dash])], ["[1.11-1.23]"])
+    c.eq("assoc 主条目档优先于声明档",
+         [(x.assoc_key(), x.tier) for x in kept([a(tier="declared"), a()])][0][1], "main")
+    c.eq("assoc 声明档与主条目同键所以只留一条",
+         len({x.assoc_key() for x in kept([a(), a(tier="declared")])}), 1)
+
+    c.eq("label 空基因退 SNPS", risks._label(a(gene="NR", snps="chr17:43124027")),
+         "chr17:43124027")
+    try:
+        risks._label(a(gene="-", snps="NR"))
+        c.ok("label 两个都空中止", False, "没中止，落了个空 label 的节点")
+    except SystemExit as e:
+        c.ok("label 两个都空中止", "label" in str(e), str(e))
+
+    multi = a(gene="", snps="rs765899; rs737387", risk_allele="rs765899-?; rs737387-?",
+              chr_id="14;14", chr_pos="68497029;68500665", ci="NR", freq="-",
+              p_value="1E-245", pubmed="NR", tier="declared")
+    rf = {("genetic_locus", "rs765899; rs737387"): 77}
+    ids = {"lung": 1}
+    row = risks.gwas_links([multi], rf, ids, 6, 61, ["lung"])[0]
+    c.eq("link 档位与角色", (row["role"], row["uri_tier"], row["risk_factor_id"]),
+         ("genetic", "declared", 77))
+    # 多 SNP 行的 CHR_ID / CHR_POS 是分号串：原先按 int / varchar(4) 拍会截断或报错
+    c.eq("link 分号串坐标原样落",
+         (row["snps"], row["chr_id"], row["chr_pos"]),
+         ("rs765899; rs737387", "14;14", "68497029;68500665"))
+    c.eq("link 占位符落成空串或 NULL",
+         (row["ci95_text"], row["risk_allele_freq"], row["pubmedid"], row["p_value_text"]),
+         ("", None, 0, "1E-245"))
+    c.eq("link 效应量共列不判方向", row["effect_kind"], "unknown")
+    c.eq("link 效应量与 mlog 落成数值而非文本", (row["or_beta"], row["pvalue_mlog"]),
+         (1.2, 8.0))
+    c.eq("link 目测过的病记 spot_checked", row["review_status"], "spot_checked")
+    c.eq("link 没目测的病不冒领",
+         risks.gwas_links([multi], rf, ids, 6, 61, [])[0]["review_status"], "unreviewed")
+
+    # CRA：Risk 表那四列是"这个组合有数"的标记，不是度量值
+    hdr = ["Cause ID", "Cause", "REI ID", "Risk", *gbd_cra.MEASURE_COLS]
+
+    def cell(cid, name, rid, flags):
+        return [cid, f"cause{cid}", rid, name, *flags]
+
+    pairs, names, numeric = gbd_cra._risk_table([hdr,
+                                                 cell(426, "Smoking", 110, ["X", "", "", "X"]),
+                                                 cell(426, "Smoking", 110, ["", "X", "X", ""]),
+                                                 cell(426, "High alcohol use", 201,
+                                                      ["X", "", "", ""])])
+    c.eq("risk 同对多行取并集", pairs[426][110], ["1", "1", "1", "1"])
+    c.eq("risk REI 名按 id 收", names, {110: "Smoking", 201: "High alcohol use"})
+    c.eq("risk 存在性标记不算数值列", numeric, [])
+    try:
+        gbd_cra._risk_table([hdr[:4], [426, "cause426", 110, "Smoking"]])
+        c.ok("risk 表头没有 Deaths 就中止", False, "没中止")
+    except SystemExit as e:
+        c.ok("risk 表头没有 Deaths 就中止", "Deaths" in str(e), str(e))
+
+    kids = {1: [110, 111], 110: [], 111: []}
+    c.eq("REI 树 父档后代", gbd_cra._descendants(1, kids), {110, 111})
+    rs = {1: [], 110: [], 111: []}
+    # 装载器的 own 表达式：有后代在本病清单里的档只是聚合展示，计了会和子档重复
+    c.eq("REI 树 聚合父档被剔子档留下",
+         [r for r in rs if not (gbd_cra._descendants(r, kids) & set(rs))], [110, 111])
+
+    def factor(**kw):
+        base = dict(code="lung", cause_id=426, cause_name="Lung cancer", rei_id=110,
+                    rei_name="Smoking", deaths=True)
+        base.update(kw)
+        return gbd_cra.Factor(**base)
+
+    f = risks.cra_links([factor()], {("exposure", "smoking"): 91}, ids, 7, 71, ["lung"])[0]
+    c.eq("cra 行只有清单没有强度",
+         (f["role"], f["uri_tier"], f["trait_uri"], f["snps"], f["or_beta"], f["pvalue_mlog"]),
+         ("exposure", None, "GBD:426", "", None, None))
+    c.eq("cra 行表型名是 GBD Cause 名", f["trait_label"], "Lung cancer")
+    c.eq("cra 键按病因×REI 构造",
+         len({factor(rei_id=110).assoc_key(), factor(rei_id=111).assoc_key()}), 2)
+    c.eq("cra 病因不同才算两条",
+         len({factor(cause_id=426).assoc_key(), factor(cause_id=427).assoc_key()}), 2)
+
+    def aborts(what: str, fn, want: str) -> None:
+        try:
+            fn()
+            c.ok(what, False, "没中止")
+        except SystemExit as e:
+            ok = want in str(e)
+            c.ok(what, ok, "" if ok else f"中止理由不含「{want}」：{e}")
+
+    aborts("GWAS 逐病数漂移就中止", lambda: risks.check_gwas([a()]), "漂移")
+    aborts("CRA 风险因素换名就中止",
+           lambda: risks.check_cra([factor(rei_name="Tobacco")]), "不再成立")
+    aborts("CRA 条数漂移就中止",
+           lambda: risks.check_cra([
+               factor(rei_id=i, rei_name=n)
+               for i, n in enumerate(sorted(gbd_cra.REI_EYEBALL))]), "条数漂移")
+
+
 CHECKS = (("seer_statfacts", check_seer), ("anatomy_subsites", check_subsites),
-          ("symptom_rows", check_symptoms))
+          ("symptom_rows", check_symptoms), ("risk_rows", check_risks))
 
 
 def main() -> int:

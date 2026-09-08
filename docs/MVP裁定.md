@@ -17,8 +17,8 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"。矩阵本身�
 | 症状清单 | **进** | `nci_pdq_html` `ok` 18/18（209 条，5 病目测 72/72，precision 100%） | L2 规则解析，非 NER；`source_id` 必须随行落库。探针的 209 条落库时按 `(disease_id, name_lang, name)` 归一成 185 行（24 条是同一症状在多个组织学档各写一遍），另有 4 条从散文句抠出的不进——句子不是症状项 |
 | 症状中文名 | **部分进** | `wikidata` `partial` 7/18（PDQ 英文 18/18 + 中文 7/18：中文维基 5 病 ∪ WHO 中文版 3 病） | 按源分行 `(disease_id, source_id, name_lang, name)`，**不做翻译列**。11 病没有中文清单，页面按病显示"暂无可靠中文来源"而不是留白 |
 | 叙述 / 介绍段 | **不进** | `who_factsheet` `partial` 4/18，判据线 ≥12/18 | 全站 fact sheet 只有 73 个主题、癌种专页 18 病里 4 病有 ≥3 条要点清单。 disease 页不给叙述段落，或只给一句由症状/统计维拼出来的中性导语 |
-| 危险因素清单 | **部分进** | GWAS Catalog `partial` 18/18（按 `targets.GWAS_URI` 声明档；只认主条目是 14/18） | 只作为 `role='genetic'` 一层（位点 + OR/β + 95% CI），它是遗传易感性不是可干预暴露 |
-| 危险因素归因强度（PAF） | **不进** | `gbd_cra` `blocked` 0/18、`gbd_results` `blocked` 0/18 | 两个 IHME 面的效应量都在授权门后（vizhub 数据面四个路由全 401）。`paf` 列建而不填，UI 不画数值榜，标"需 IHME 授权" |
+| 危险因素清单 | **进**（两层） | GWAS Catalog `partial` 18/18（按 `targets.GWAS_URI` 声明档；只认主条目是 14/18）→ C2e 落 6,208 行；GBD CRA 探针判 `blocked`（那条判据要的是带效应量的 ≥3 个因素），但同一趟实测出的匿名 A2 清单骨架可用：33 个暴露 × 71 条 cause×Risk 对应 → C2e 落 71 行 | 一行是一个**关联**不是一个位点（键含 STUDY ACCESSION 与 P-VALUE，实测按 PUBMEDID 构造会折掉 496 条真关联）。`role='genetic'` 是遗传易感性不是可干预暴露，页面文案不许写成"危险因素排行"；`role='exposure'` 只有清单没有强度，源里 Deaths/YLLs/YLDs/DALYs 四列的 `X` 标的是"这个组合有数"，不是效应量，别拿它当强度排序 |
+| 危险因素归因强度（PAF） | **不进** | `gbd_results` `blocked` 0/18；`gbd_cra` 的效应量同一道门（vizhub 数据面 `/api/metadata`、`/api/data`、`/api/hierarchy`、`/api/data/version` 四路由全 401） | 缺的只剩强度这一半，清单两半已在 C2e 落库。`paf` / `paf_basis` 建而不填，UI 不画数值榜，标"需 IHME 授权" |
 | 发病量（国家单点） | **进** | `globocan` `ok` 18/18 | 2024 年估算、国家级单点，34 个癌种码；现患(type 2)每个 (cancer,sex,type) 键实测单行且不带期间标签——1 年 / 3 年 / 5 年现患混在同一个数里，口径只在 `description.prevalence` 那一句，落库时随行带上且不许标成「5 年现患」 |
 | 发病年龄组 / 趋势 | **进**（双列） | `gco_overtime` `partial` 18/18 有值 | 中国是 5 个登记处覆盖 60% 人口的外推、最新一年 2017；与 Cancer Today 的国家级估算不同源，**两列分开存、不可相减成趋势** |
 | 死亡年龄组（中国） | **不进** | `who_gho` `empty` 0/18、GBD `blocked` | 判据两半（≥10 年龄组 × 中国行）在 GHO 里从不同时出现在同一指标上；GBD 那半等注册账号后重测 |
@@ -27,12 +27,12 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"。矩阵本身�
 | 前沿文献 | **进** | `europepmc` `ok` 18/18（近 5 年 765,891 篇，每病都有 OA 命中） | 同上按声明词查；`MH:` 主题词路只覆盖全库 2.2%，不用它做主键 |
 | 靶点 / 药 | **进** | `opentargets` `ok` 18/18（合计 228,551 条关联、6,323 个在研药） | 查询节点按 `targets.OT_NODE` 覆盖（目前只有乳腺癌换宽档），换档前后的数字都在探针 message 里可对账 |
 | 症状分析（症状→病反查） | **进** | 复用 `symptom` 表 | 英文路 18/18 可反查；中文路只有 7/18，反查结果按 `name_lang` 分组显示，不混排 |
-| 器官 / 症状 / 危险因素 / 靶点 / 药物反查 | **进**（危险因素按"遗传关联"口径） | 上面各行 | 反查命中率随正向维的缺口一起不一致，UI 要在结果数少的维度上显示覆盖边界，不能默认"没有结果＝没有关联" |
+| 器官 / 症状 / 危险因素 / 靶点 / 药物反查 | **进**（危险因素两层各自反查） | 上面各行 | 反查命中率随正向维的缺口一起不一致，UI 要在结果数少的维度上显示覆盖边界，不能默认"没有结果＝没有关联"。危险因素这一维反查出来的是 `risk_factor` 节点（`genetic_locus` 是位点标签、`exposure` 是 GBD 暴露名），两层不同形状，结果页按 `role` 分栏不混排 |
 
 ## 二、页面上要显示"暂无可靠来源"的地方
 
 1. 中国死亡年龄组（全 18 病）。
-2. 危险因素的归因强度与可干预暴露清单（全 18 病；只有遗传关联那一层）。
+2. 危险因素的归因强度 PAF（全 18 病）。清单两层都已落库，但暴露那层薄：17/18 病有行（brain 在源里一行都没有），其中只有 10/18 病达到探针那条"≥3 个独立暴露"的线，其余病只有 1–2 个——按实有条数显示，不补 0、不与遗传关联排成同一张榜。
 3. 症状频率带 `freq_band`（全 18 病——PDQ 症状小节百分号出现数实测 0，全站只有 Orphanet 能给而它常见上皮癌 0 命中）。
 4. 11 病的中文症状名：liver, stomach, esophagus, prostate, cervix, ovary, thyroid, bladder, kidney, brain, nhl。
 5. 疾病页的叙述/介绍段（全 18 病）。
@@ -46,9 +46,10 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"。矩阵本身�
 
 裁定是"开，两维一起补"（死亡年龄组 + 危险因素归因强度）。**账号已注册、凭据已进 `.env`**
 （2026-09-08 实测两个键都是非空真值）。前置因此从"等人注册"换成"等取数路实现"：
-`gbd_results` / `gbd_cra` 两行的状态仍是 `paused`，要接的是"人在浏览器里登录换到 token、
-脚本带着 token 取数"这一段——已实测 `authorize` 只认 v2 端点加 PKCE 授权码流，隐式流被拒，
-所以换 token 这步代不了浏览器，探针只能吃换回来的 token。
+`gbd_results` 的状态仍是 `paused`（2026-09-08 C2e 后 `gbd_cra` 已转 `active`——它匿名可取的
+A2 清单够装暴露那一层，授权门后剩的只是强度，见 §一 与 §二.2），要接的是"人在浏览器里登录
+换到 token、脚本带着 token 取数"这一段——已实测 `authorize` 只认 v2 端点加 PKCE 授权码流，
+隐式流被拒，所以换 token 这步代不了浏览器，探针只能吃换回来的 token。
 
 注册入口已实测定位（2026-09-08）。**没有独立的注册页**，这就是找不到入口的原因：
 
@@ -111,14 +112,16 @@ assoc 17,064 / lit 724,160 / drugs 1,036）。代价如实记在 `targets.py`：
 
 ### 5. `source.status` 全部离开 candidate
 
-21 行翻成 12 `active` / 8 `paused` / 1 `rejected`，判据写在 `sources.py` 的模块 docstring 里：
+21 行原裁定翻成 12 `active` / 8 `paused` / 1 `rejected`；C2e 落库暴露清单后 `gbd_cra` 转
+`active`，`source` 表现值是 13 / 7 / 1。判据写在 `sources.py` 的模块 docstring 里：
 
-- `active`（12）：mondo, icdo3_seer, nci_pdq_html, seer_statfacts, globocan, gco_overtime,
-  gwas_catalog, ctgov_v2, europepmc, opentargets, who_factsheet, wikidata。
+- `active`（13）：mondo, icdo3_seer, nci_pdq_html, seer_statfacts, globocan, gco_overtime,
+  gwas_catalog, gbd_cra, ctgov_v2, europepmc, opentargets, who_factsheet, wikidata。
   其中 who_factsheet 与 wikidata 都是 `partial`——进 `active` 是因为它们各自还有
   达标的贡献（WHO 的 3 病中文清单、维基的 5 病中文清单与 CC0 英文名），
-  不是因为整维过线。
-- `paused`（8）：gbd_results, gbd_cra（等注册账号）；
+  不是因为整维过线；`gbd_cra` 同理：探针判 `blocked` 的是效应量那一面，匿名 A2 清单
+  这一面已经够装 `role='exposure'` 的表，剩下的缺口写在它的 evidence 里而不是靠状态位表达。
+- `paused`（7）：gbd_results（等浏览器换到 token 才能补数值面）；
   icdo32_naaccr, mesh, ncit, orphanet_product4, hpoa, monarch_common_disease
   （只做过可达性，没做过内容级实测——MVP 不依赖它们，要启用得先补探针）。
 - `rejected`（1）：who_gho（内容级探针判空 0/18，且这一维换源补不上）。
@@ -129,6 +132,11 @@ assoc 17,064 / lit 724,160 / drugs 1,036）。代价如实记在 `targets.py`：
   P1 的 C1a 收口：裁成 `targets.GWAS_URI` 逐病声明（形状同 `OT_NODE`，不收分子亚型、癌前
   与良性档），矩阵那一列改读"主条目 + 声明档"口径 = 18/18，只认主条目的 14/18 原样留在
   探针 sample 的 `pass_main`。三口径的分工与逐病代价写在 `docs/数据源探针计划.md` 的 B4 那节。
+- ✅ `gbd_cra` 在 P0 是按"取不到 PAF"整源挂起的，但判据取不到的那一面（vizhub 数据面四路由
+  全 401）与它匿名可取的 A2 清单是两件事——清单里没有效应量，不等于清单本身不能装表。
+  这条已在 P1 的 C2e 收口：33 个暴露 × 71 条 cause×Risk 对应按 `role='exposure'` 落库，
+  源状态转 `active`，授权门后仍缺的只有 `paf` / `paf_basis`。以后再有"某源一面 blocked"，
+  先分开判"这一面能不能装表"，别整源挂起。
 - SEER 年龄组只有 8 档宽分组，画 5 岁组标化率要另走 SEER*Explorer 的未公开 JSON 接口。
 - 六个 `paused` 的码表源如果 P1 里哪个维要启用，得先补一支内容级探针，
   否则矩阵那一列永远没有逐病格。
@@ -155,7 +163,7 @@ assoc 17,064 / lit 724,160 / drugs 1,036）。代价如实记在 `targets.py`：
 | 关联器官 | `anatomy_node` + `disease_anatomy` | `anatomy_node.kind` 分 site_recode 与亚部位 term，`disease_anatomy.role` 分 primary 与 subsite，`basis` 记挂载依据（ICD-O-3 相交 / MONDO 的 ICD-9 xref）。亚部位只收 ICD-9 为它单开了部位档的 term（带小数点、末位非 .8/.9、且这一档没被同病别的 term 共用）——145 个候选留 51 个，血病三台整维跳过（ICD-9 200–208 章编的是细胞类型不是部位）；实测 82 节点 + 51 节点，逐病 primary 1–5 条 |
 | 组织学 | `histology_code` + `disease_histology` | `basis='via_site_recode'`——这个映射是自己从交叉表推出来的，不是源说过。只收行为码 /3（803 个码里 657 个），逐病展开 129–212 条 |
 | 症状清单 + 中文名 | `symptom` | 按源分行，`name_lang` 分 en/zh；`source_id`、`source_url`、`anchor` 随行，可点回原文 |
-| 危险因素（遗传那一层） | `risk_factor` + `disease_risk_factor` | `role` 分 genetic/exposure，`uri_tier` 分主条目与声明档，`p_value_text` 与 `pvalue_mlog` 两列分开存 |
+| 危险因素（两层） | `risk_factor` + `disease_risk_factor` | `role` 分 genetic/exposure，`uri_tier` 分主条目与声明档，`p_value_text` 与 `pvalue_mlog` 两列分开存。C2e 实测：节点 3,049 位点 + 33 暴露（基因整串当一个节点，多基因分号串不拆；`MAPPED_GENE` 空的 613 行退到 SNPS），关系 6,208 行遗传（18/18 病＝主条目 3,651 行 16 病 + 声明档 2,557 行 4 病）+ 71 行暴露（17/18 病） |
 | 发病量 / 年龄组 / 趋势 | `stat_fact`（长表） | `estimate_basis` 就是"两列分开存、不可相减成趋势"那一句的落点。装的是 GLOBOCAN 国家单点、GCO 逐年 × 18 档 5 岁组、SEER 的新发率与死亡率年度序列（观测与拟合分 `registry_cohort` / `model_trend`）与 SEER 的 8 档宽年龄组构成 |
 | 五年存活率 | `survival` | `stage_scheme` 分 SEER 汇总档与 Ann Arbor，`is_observed` 分开观测值与拟合值。整维三层都在这一张表：分期档、At a Glance 的全期头条、5-Year Relative Survival 的逐年序列——`stat_fact` 不重复写同一个数（实测一次装载里逐格相同的有 1674 行） |
 | 在招试验 | `trial` | 只建 CT 白名单实测到的列，没有日期列 |

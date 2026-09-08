@@ -12,8 +12,10 @@
 
 `status` 从 B7c 起不再留 candidate，三个态各自的判据：
   · `active`——有内容级探针（不是只探可达性的 reach 行）实测过，且 MVP 建表用得上。
-  · `paused`——两种情形合用一个态：等人工注册账号才能补测的（IHME 那两维）、
+  · `paused`——两种情形合用一个态：等人工注册账号才能补测的（IHME gbd_results 的数值面）、
     以及只做过 reach 没做过内容级实测的备选码表。两者都不是"源坏了"，所以不写 rejected。
+    同源另有一面已经够装表的就转 active：gbd_cra 的 401 只剩 PAF 那一半，
+    清单这一半从匿名附件落进库了，缺口写在 evidence 里而不是靠状态位表达。
   · `rejected`——内容级探针判空，且这一维换源也补不上（WHO GHO 的死因×年龄组）。
 逐源理由与"哪几维进 MVP"记在 docs/MVP裁定.md，这里不重复一遍，免得两处说法各自漂移。
 """
@@ -336,7 +338,7 @@ SOURCES: tuple[Source, ...] = (
                    "SEER/GCO 是观测或估算的例数，不同表可以并排显示但不能相减",
         fetch_mode="annual",
         reliability="high",
-        status="paused",
+        status="active",
         evidence="B4 实测（2026-09-07）：效应量 0/18，关联骨架 10/18。"
                  "vizhub GBD Compare 的匿名面只有 GET /api/config（200，只有 "
                  "releaseText=GBD 2023 / gbdYear=2023 / copyYear=2025 这类版本字段），"
@@ -355,7 +357,10 @@ SOURCES: tuple[Source, ...] = (
                  "cervix / ovary / bladder 各 2、thyroid/uterus/nhl/myeloma 各 1、brain 一行都没有。"
                  "层级表只能继续用 2021 codebook：GBD 2023 的 Cause/REI/Location Hierarchies record "
                  "页面上没有任何未登录文件链接，且这一版 2023 的 88 个 REI 全部能在 2021 层级表里找到，"
-                 "两版之间没有出现过重编号",
+                 "两版之间没有出现过重编号。"
+                 "C2e 落库（2026-09-08）：这份匿名 A2 就是危险因素维的可干预暴露那一半——"
+                 "33 个暴露 × 71 条病因对应关系已按 `role='exposure'` 进库，覆盖 17/18 病"
+                 "（brain 源里一行都没有，不是解析漏）。授权门后剩的只是强度：paf 仍无源可填。",
     ),
     Source(
         code="globocan",

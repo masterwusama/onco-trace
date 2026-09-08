@@ -20,15 +20,20 @@ B7 就会把"有清单没强度"这一维当成通了。
 不能按 level≥3 切：`High body-mass index`、`High fasting plasma glucose` 是二档却自带
 暴露与 PAF，按层数切会把达标病数从 10/18 误判成 7/18。层级表唯一的匿名来源在 gbd_results
 归档的 codebook 里（2023 版挂在登录门后），所以这里跨源读它，不在本模块复制一份 URL。
+
+取表与归档抽在 `load_payload` 里、三张表的拼接抽在 `_cra` 里，判据只读它们的产出——
+`load/risks.py` 落那份可干预暴露清单时不必再解析一遍工作簿，也不必重抄一份剔聚合档的规则。
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
 import time
 import zipfile
 from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import openpyxl
@@ -63,6 +68,36 @@ CODEBOOK_NAME = "IHME_GBD_2021_CODEBOOK.zip"
 REI_SHEET = "REI Hierarchy"
 MEASURE_COLS = ("Deaths", "YLLs", "YLDs", "DALYs")
 MIN_FACTORS = 3
+
+# 逐条目测（2026-09-08，读的是 `data/raw/gbd_cra/2025-10-23` 那份 A2 的 Risk 表：
+# 18 病各自的独立危险因素清单 + 33 个 REI 名，也就是下面这两份声明）。
+# 判的是这一维唯一的规则产物——"剔掉聚合档之后剩下的确实都是可干预暴露"：33 个名里没有
+# Tobacco / Dietary / Metabolic / Occupational 这类 level-2 聚合层（它们只作为父档出现，
+# 计了会和自己的子档重复），也没有中间量表型（"High fasting plasma glucose" 是 GBD 自己
+# 建模用的暴露，不是我们判出来的）。brain 0 条是源里这一癌确实没有独立风险因素行。
+# 条数与名单都是装载器落库前的核对项：GBD 改清单就是这份结论过期，不许按老口径静默落库。
+EYEBALL: dict[str, int] = {
+    "lung": 16, "colorectum": 11, "liver": 5, "stomach": 3, "breast_female": 7,
+    "pancreas": 4, "esophagus": 4, "prostate": 4, "cervix": 2, "ovary": 2,
+    "thyroid": 1, "bladder": 2, "kidney": 3, "brain": 0, "uterus": 1,
+    "leukemia": 4, "nhl": 1, "myeloma": 1,
+}
+REI_EYEBALL = frozenset({
+    "Ambient particulate matter pollution", "Chewing tobacco",
+    "Diet high in processed meat", "Diet high in red meat", "Diet high in sodium",
+    "Diet low in calcium", "Diet low in fiber", "Diet low in fruits", "Diet low in milk",
+    "Diet low in vegetables", "Diet low in whole grains", "Drug use", "High alcohol use",
+    "High body-mass index", "High fasting plasma glucose",
+    "Household air pollution from solid fuels", "Low physical activity",
+    "Occupational exposure to arsenic", "Occupational exposure to asbestos",
+    "Occupational exposure to benzene", "Occupational exposure to beryllium",
+    "Occupational exposure to cadmium", "Occupational exposure to chromium",
+    "Occupational exposure to diesel engine exhaust",
+    "Occupational exposure to formaldehyde", "Occupational exposure to nickel",
+    "Occupational exposure to polycyclic aromatic hydrocarbons",
+    "Occupational exposure to silica", "Occupational exposure to trichloroethylene",
+    "Residential radon", "Secondhand smoke", "Smoking", "Unsafe sex",
+})
 
 
 def _sheets(body: bytes) -> dict[str, list]:
@@ -155,7 +190,66 @@ def _config_fields(routes: dict) -> dict:
     return {k: d[k] for k in ("releaseText", "gbdYear", "copyYear") if d.get(k) is not None}
 
 
-def probe(offline: bool = False) -> ProbeResult:
+@dataclass(frozen=True)
+class Factor:
+    """一个"病 × 独立危险因素"对：装载器写的一行就是它。
+
+    只收剔掉聚合档之后的独立档——`Dietary` 与它下面十几个子档会同时出现在同一病的行里，
+    两个都落等于把一个危险因素数成十几个。
+    """
+
+    code: str
+    cause_id: int
+    cause_name: str
+    rei_id: int
+    rei_name: str
+    deaths: bool  # Deaths 那格有 `X`。四列度量都只是"这个组合有数"的标记，不是效应量
+
+    def assoc_key(self) -> str:
+        return hashlib.sha1(f"cra|{self.cause_id}|{self.rei_id}".encode("utf-8")).hexdigest()
+
+
+@dataclass
+class Cra:
+    """Risk / Cause / codebook 三张表拼到一起的产出：判据读 `per`，装载器读 `factors`。"""
+
+    sheets: dict = field(default_factory=dict)
+    chdr: list = field(default_factory=list)
+    risk_hdr: list = field(default_factory=list)
+    pairs: dict = field(default_factory=dict)
+    rei_names: dict = field(default_factory=dict)
+    numeric: list = field(default_factory=list)
+    causes: dict = field(default_factory=dict)
+    cause_ids: set = field(default_factory=set)
+    risk: list = field(default_factory=list)
+    cause: list = field(default_factory=list)
+    risk_blank: int = 0
+    unknown_rei: list = field(default_factory=list)
+    hier_dir: Path | None = None
+    per: dict = field(default_factory=dict)
+    factors: list[Factor] = field(default_factory=list)
+
+
+@dataclass
+class CraPayload:
+    """取表这一趟的产出。`blocked` 非空表示这份 A2 没拿成，探针原样报回去。"""
+
+    cra: Cra | None = None
+    blocked: ProbeResult | None = None
+    key_dir: Path | None = None
+    version: str = "unknown"
+    a2_name: str = ""
+    size: int = 0
+    sha: str = ""
+    meta: dict = field(default_factory=dict)
+    ms: int = 0
+    reach: str = "direct"
+    http: int | None = None
+    proxied: list = field(default_factory=list)
+
+
+def load_payload(offline: bool) -> CraPayload:
+    pl = CraPayload()
     reach = "offline" if offline else "direct"
     ms_total = 0
     key_dir: Path | None = None
@@ -184,19 +278,21 @@ def probe(offline: bool = False) -> ProbeResult:
         ms_total += g.latency_ms
         mark("guide 页", g)
         if not g.ok:
-            return ProbeResult(
+            pl.blocked = ProbeResult(
                 verdict="dead" if g.status in (404, 410) else "blocked",
                 message=f"{GUIDE} → {g.status or g.reachability}：{g.note}",
                 criteria=CRITERIA, dataset_code=DATASET, reachability=g.reachability,
                 http_status=g.status, latency_ms=g.latency_ms)
+            return pl
         m = A2_RE.search(g.text)
         if not m:
-            return ProbeResult(
+            pl.blocked = ProbeResult(
                 verdict="dead",
                 message="guide 页 200 但没有 A2_RESULTS 交叉表链接——IHME 改了附件命名或下架了，"
                         "这一维的匿名关联骨架也跟着没了",
                 criteria=CRITERIA, dataset_code=DATASET, reachability=g.reachability,
                 http_status=g.status, latency_ms=ms_total)
+            return pl
         href = m.group(1)
         a2_url = href if href.lower().startswith("http") else SITE + href
         a2_name = a2_url.rsplit("/", 1)[-1]
@@ -205,12 +301,13 @@ def probe(offline: bool = False) -> ProbeResult:
         http = r.status
         mark("A2 交叉表", r)
         if not r.ok or not r.body or r.truncated:
-            return ProbeResult(
+            pl.blocked = ProbeResult(
                 verdict="dead" if r.status in (404, 410) else "blocked",
                 message=f"{a2_url} → {r.status or r.reachability}：{r.note} "
                         f"declared={r.declared_bytes} got={len(r.body)} truncated={r.truncated}",
                 criteria=CRITERIA, dataset_code=DATASET, reachability=r.reachability,
                 http_status=r.status, latency_ms=ms_total)
+            return pl
         a2, sha = r.body, raw.sha256_bytes(r.body)
 
         routes = {}
@@ -228,30 +325,87 @@ def probe(offline: bool = False) -> ProbeResult:
 
     m = re.search(r"Y(\d{4})M(\d{2})D(\d{2})", a2_name)
     version = f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else "unknown"
+    if not offline:
+        key_dir = raw.archive_dir(SOURCE, version)
+        (key_dir / a2_name).write_bytes(a2)
+        (key_dir / "guide.html").write_bytes(g.body)
+        (key_dir / META_NAME).write_bytes(
+            json.dumps(meta, ensure_ascii=False, indent=1).encode("utf-8"))
 
-    sheets = _sheets(a2)
-    chdr = [("" if v is None else str(v)).strip() for v in sheets["Cause"][0]]
-    risk_hdr = [("" if v is None else str(v)).strip() for v in sheets["Risk"][0]]
-    pairs, rei_names, numeric = _risk_table(sheets["Risk"])
-    cause_ids = {int(r[0]) for r in sheets["Cause"][1:] if r and r[0] is not None}
+    pl.cra = _cra(a2)
+    pl.key_dir, pl.version, pl.a2_name, pl.size = key_dir, version, a2_name, len(a2)
+    pl.sha, pl.meta, pl.ms, pl.http = sha, meta, ms_total, http
+    pl.reach, pl.proxied = reach, via_proxy
+    return pl
+
+
+def _cra(a2: bytes) -> Cra:
+    """Risk / Cause / codebook 三张表合成一份产出：判据数的 `per` 与装载器落的 `factors` 同源。
+
+    表间拼接若在探针里另留一份，两边会悄悄分叉，而分叉的表现形式是
+    "探针说这维够用，库里却没有数"。
+    """
+    c = Cra()
+    c.sheets = _sheets(a2)
+    c.chdr = [("" if v is None else str(v)).strip() for v in c.sheets["Cause"][0]]
+    c.risk_hdr = [("" if v is None else str(v)).strip() for v in c.sheets["Risk"][0]]
+    c.pairs, c.rei_names, c.numeric = _risk_table(c.sheets["Risk"])
+    c.cause_ids = {int(r[0]) for r in c.sheets["Cause"][1:] if r and r[0] is not None}
     # read_only 模式给的行数包含上万条空行，只有带真值的行数能进 rows_seen，
     # 否则 dataset_release 会记下一个这份文件根本没有的规模
-    risk = [r for r in sheets["Risk"][1:] if any(v not in (None, "") for v in r)]
-    cause = [r for r in sheets["Cause"][1:] if any(v not in (None, "") for v in r)]
-    risk_blank = len(sheets["Risk"]) - 1 - len(risk)
+    c.risk = [r for r in c.sheets["Risk"][1:] if any(v not in (None, "") for v in r)]
+    c.cause = [r for r in c.sheets["Cause"][1:] if any(v not in (None, "") for v in r)]
+    c.risk_blank = len(c.sheets["Risk"]) - 1 - len(c.risk)
     causes = {}
-    for row in cause:
+    for row in c.cause:
         try:
-            causes[int(row[0])] = str(row[chdr.index("Cause")])
+            causes[int(row[0])] = str(row[c.chdr.index("Cause")])
         except (TypeError, ValueError, IndexError):
             continue
+    c.causes = causes
 
-    parent, level, hier_dir = _rei_tree()
+    parent, level, c.hier_dir = _rei_tree()
     kids: dict[int, list[int]] = defaultdict(list)
     for k, p in parent.items():
         if p != k:
             kids[p].append(k)
-    unknown_rei = sorted({r for v in pairs.values() for r in v} - set(parent))
+    c.unknown_rei = sorted({r for v in c.pairs.values() for r in v} - set(parent))
+
+    per: dict[str, dict] = {}
+    for t in TARGETS:
+        rs = c.pairs.get(int(t.gbd_cause), {})
+        # 集合内无后代 = 独立危险因素；有后代的那一档只是聚合展示，计了会重复
+        own = sorted((r for r in rs if not (_descendants(r, kids) & set(rs))),
+                     key=lambda r: (level.get(r, -1), c.rei_names.get(r, "")))
+        per[t.code] = {
+            "code": t.code, "gbd_cause": int(t.gbd_cause),
+            "gbd_name": causes.get(int(t.gbd_cause), ""),
+            "tiers": len(rs), "independent": len(own),
+            "with_deaths": sum(1 for r in own if rs[r][0] == "1"),
+            "factors": [c.rei_names.get(r, str(r)) for r in own],
+        }
+        for rid in own:
+            c.factors.append(Factor(
+                code=t.code, cause_id=int(t.gbd_cause),
+                cause_name=causes.get(int(t.gbd_cause), ""), rei_id=rid,
+                rei_name=c.rei_names.get(rid, str(rid)), deaths=rs[rid][0] == "1"))
+    c.per = per
+    return c
+
+
+def probe(offline: bool = False) -> ProbeResult:
+    pl = load_payload(offline)
+    if pl.blocked:
+        return pl.blocked
+    c = pl.cra
+    sheets, pairs, rei_names, numeric = c.sheets, c.pairs, c.rei_names, c.numeric
+    causes, per, hier_dir, unknown_rei = c.causes, c.per, c.hier_dir, c.unknown_rei
+    risk, cause, cause_ids = c.risk, c.cause, c.cause_ids
+    chdr, risk_hdr, risk_blank = c.chdr, c.risk_hdr, c.risk_blank
+    a2_name, size = pl.a2_name, pl.size
+    version, key_dir, sha = pl.version, pl.key_dir, pl.sha
+    meta, ms_total, reach, http = pl.meta, pl.ms, pl.reach, pl.http
+    via_proxy = pl.proxied
 
     routes = meta.get("routes", {})
     via_proxy = meta.get("via_proxy") or via_proxy
@@ -259,32 +413,11 @@ def probe(offline: bool = False) -> ProbeResult:
     gated = [p for p in DATA_ROUTES if (routes.get(p) or {}).get("status") in (401, 403)]
     open_data = [p for p in DATA_ROUTES if (routes.get(p) or {}).get("status") == 200]
     notfound = [p for p in CONTROL_ROUTES if (routes.get(p) or {}).get("status") == 404]
-
-    per = {}
-    for t in TARGETS:
-        rs = pairs.get(int(t.gbd_cause), {})
-        # 集合内无后代 = 独立危险因素；有后代的那一档只是聚合展示，计了会重复
-        own = sorted((r for r in rs if not (_descendants(r, kids) & set(rs))),
-                     key=lambda r: (level.get(r, -1), rei_names.get(r, "")))
-        per[t.code] = {
-            "code": t.code, "gbd_cause": int(t.gbd_cause),
-            "gbd_name": causes.get(int(t.gbd_cause), ""),
-            "tiers": len(rs), "independent": len(own),
-            "with_deaths": sum(1 for r in own if rs[r][0] == "1"),
-            "factors": [rei_names.get(r, str(r)) for r in own],
-        }
     cov = sum(1 for v in per.values() if v["independent"] >= MIN_FACTORS)
     cov_death = sum(1 for v in per.values() if v["with_deaths"] >= MIN_FACTORS)
-    no_rows = [c for c, v in per.items() if not v["tiers"]]
+    no_rows = [k for k, v in per.items() if not v["tiers"]]
     # 词表里没这个病因档 ≠ 有档却没有危险因素行，混在一起会指错方向（前者要改 targets.py）
     no_cause = [t.code for t in TARGETS if int(t.gbd_cause) not in cause_ids]
-
-    if not offline:
-        key_dir = raw.archive_dir(SOURCE, version)
-        (key_dir / a2_name).write_bytes(a2)
-        (key_dir / "guide.html").write_bytes(g.body)
-        (key_dir / META_NAME).write_bytes(
-            json.dumps(meta, ensure_ascii=False, indent=1).encode("utf-8"))
 
     pairs_n = sum(len(v) for v in pairs.values())
     risk_total = len(sheets["Risk"]) - 1
@@ -295,7 +428,7 @@ def probe(offline: bool = False) -> ProbeResult:
         f"所以是真有路由且要授权，不是整站兜底）；匿名开放面只有 GET {CONFIG_ROUTE} 回 200，"
         f"给的内容只有 {cfg_txt}，不含数据。"
         "要走通只能注册 IHME 免费非商用账号（Azure AD B2C，scope data-api/data.read）。"
-        f"匿名可取回的是 guide 页挂的 {a2_name}（{len(a2)} B，{len(sheets)} 张表）："
+        f"匿名可取回的是 guide 页挂的 {a2_name}（{size} B，{len(sheets)} 张表）："
         f"Risk 表真数据 {len(risk)} 行（read_only 报 {risk_total} 行，其中 {risk_blank} 行整行空白），"
         f"去重后 {pairs_n} 个 cause×REI 对 = {len(pairs)} 个病因 × {len(rei_names)} 个 REI；"
         f"{'/'.join(MEASURE_COLS)} 四列的值只有 X（该组合有数）或空，"
@@ -335,6 +468,6 @@ def probe(offline: bool = False) -> ProbeResult:
         dataset_code=DATASET,
         upstream_version=version,
         release_date=None if version == "unknown" else version,
-        release_bytes=len(a2),
+        release_bytes=size,
         release_sha256=sha,
     )

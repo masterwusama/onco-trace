@@ -7,18 +7,19 @@
 数据全部来自公开源抓取，仓库里没有人工录入模块。每个数字都带来源、口径与查阅时间；
 本站不做诊断，症状反查输出的是参考排序。
 
-## 当前进度：P0 收口、装载已过症状维，下一批是危险因素
+## 当前进度：P0 收口、装载已过危险因素维，下一批是研究层
 
 P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"，两个产出都已在仓库里：
 [docs/数据源覆盖度.md](docs/数据源覆盖度.md)（13 列 × 16 份裁定，由
 `cd etl && python -m onco_etl matrix` 从 `source_probe_log` 自动生成）与
 [docs/MVP裁定.md](docs/MVP裁定.md)（逐维裁进/不进、以什么口径进、缺的那半在页面上怎么显示）。
-21 个候选源的 `status` 已从占位的 `candidate` 翻成 12 `active` / 8 `paused` / 1 `rejected`。
+21 个候选源的 `status` 已从占位的 `candidate` 翻成 13 `active` / 7 `paused` / 1 `rejected`
+（C2e 把 GBD 匿名可取的危险因素清单落库后，`gbd_cra` 从 `paused` 转成 `active`）。
 15 张业务表已按这份裁定建好并落库（`db/migrations/0002_business_tables.sql`，与 `db/schema.sql`
 同内容）。每张表的每一列都对着 `source_probe_log` 里的 `fields_seen` 与 `sample` 来——
 探针没量到的字段不建列，源给出口径差别的地方拆成列存而不是混成一列。
 装载器已开工：`etl/onco_etl/load/` 是底座（拿版本号、幂等写行、出处五列），
-疾病主档、器官树与组织学、统计层与生存率、症状四批已落库——`disease` 18 行（`ncit_id` 18/18 非空）、
+疾病主档、器官树与组织学、统计层与生存率、症状、危险因素五批已落库——`disease` 18 行（`ncit_id` 18/18 非空）、
 `anatomy_node` 133 个节点（82 个 SEER site recode + 51 个 MONDO 亚部位 term）、
 `histology_code` 657 个恶性形态学码，逐病挂载 85 条器官关系与 3,111 条组织学关系；
 `stat_fact` 16,398 行（GLOBOCAN 中国 2024 国家单点 162 / GCO Over Time 逐年 × 18 档 5 岁组
@@ -31,11 +32,16 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"，两个产出�
 症状项，不落）、中文维基条目 67 条、WHO 中文版 18 条（只有 3 病有症状节）。中文侧合起来只有
 7/18 病有现成清单，另 11 病的中文名按实测留空、不做翻译列；维基那 67 条里 32 条逐条目测判为
 分期定义、亚型描述、并发症或释义段，置 `rejected` 留痕而不是删掉——删了就没人知道为什么少了。
-其余按维度分批推进——危险因素 → 研究层，后端与前端接在这之后。
+`risk_factor` 3,082 个节点（3,049 个遗传位点标签 + 33 个可干预暴露）配 `disease_risk_factor`
+6,279 行：GWAS 6,208 行覆盖 18/18 病（主条目档 3,651 + `targets.GWAS_URI` 声明档 2,557；
+一行是一条关联不是一个位点，键含研究号与 p 值，所以行数比去异位点数 4,493 大）；GBD CRA 71 行
+覆盖 17/18 病（brain 在源里一行都没有），这一层只有清单没有强度——源里 Deaths/YLLs/YLDs/DALYs
+四列的 `X` 标的是"这个组合有数"，不是效应量。`paf`、`paf_basis`、`risk_factor.label_zh` 建而不填。
+其余按维度分批推进——研究层（试验 / 文献 / 靶点与药），后端与前端接在这之后。
 P0 只剩一件收尾的事：IHME 的免费非商用账号已注册、凭据已填进 `.env`，但数值入口的登录是
 Azure AD B2C 换 token（scope `…/data-api/data.read`，界面前还有一层 Cloudflare），这条取数路还没实现。
-接上之前 `gbd_results` / `gbd_cra` 两支探针记 `paused`，中国死亡年龄组与危险因素归因强度（PAF）
-这两半留空。注册入口也已实测定位（GBD Results 页一打开就弹注册对话框，顶栏 Account → Register
+接上之前 `gbd_results` 一支探针记 `paused`（`gbd_cra` 匿名可取的清单已在 C2e 落库），
+中国死亡年龄组与危险因素归因强度（PAF）这两半留空。注册入口也已实测定位（GBD Results 页一打开就弹注册对话框，顶栏 Account → Register
 是同一条流的第二条路；没有独立注册页）。
 
 ```
@@ -159,6 +165,7 @@ ops\etl.ps1 load --code disease --offline # 把疾病主档从声明 + MONDO 归
 ops\etl.ps1 load --code anatomy --offline # 器官树与组织学：SEER 交叉表 + MONDO 亚部位 → 四张表
 ops\etl.ps1 load --code stats --offline  # 统计层：GLOBOCAN + GCO Over Time + SEER → stat_fact 与 survival
 ops\etl.ps1 load --code symptoms --offline # 症状：PDQ 英文 + 中文维基条目 + WHO 中文版 → symptom
+ops\etl.ps1 load --code risks --offline    # 危险因素：GWAS 关联 + GBD CRA 清单 → risk_factor 与 disease_risk_factor
 ops\etl.ps1 load --offline               # 全部装载器按注册顺序跑一遍
 ops\etl.ps1 load --code anatomy --dry-run # 整批写进去再回滚，只验约束不留下数据
 ops\etl.ps1 probe-reach --code mondo     # 只探指定源的可达性
