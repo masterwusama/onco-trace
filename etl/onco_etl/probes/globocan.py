@@ -12,13 +12,21 @@
 过滤器而不是年龄档，`ages_specific=1` 加与不加都回同样行数），年度序列也只体现为
 `meta/update/` 列出的历史版本——一版一个年份，不是一条曲线。年龄组与逐年那两半由同站的
 Cancer Over Time 探针（源 `gco_overtime`）另行裁定，这一行不许替它说话。
+
+取数与归档抽在 `load_payload` 里，判据只读它的产出——装载统计层时不必再下一遍。
+响应里一个 `(cancer_code, sex, type)` 键只有一行，度量全在 `type` 上（0 新发 / 1 死亡 /
+2 现患），年龄维压根不在字段里；`description` 那一块是这三行各自的估算口径原文，
+`load/stats.py` 要按它给每行配 `cohort_note`。
 """
 from __future__ import annotations
 
+import collections
 import json
 import re
 import time
+from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
 from .. import raw
 from ..fetch import fetch
@@ -103,46 +111,107 @@ def _get_json(url: str, ms: int) -> tuple[object, int, int, str, bytes]:
     return parsed, ms, r.status, r.reachability, r.body
 
 
-def probe(offline: bool = False) -> ProbeResult:
-    http: int | None = None
-    ms = 0
+def this_release(updates: list, version: str) -> dict | None:
+    """meta/update 里对应本次版本的那条公开发布。
+
+    探针与装载器共用这一个取法：两边各写一遍挑选规则，迟早有一边忘了过滤 intern=1，
+    dataset_release.release_date 就会在一次探针一次装载之间来回变。
+    """
+    public, _pre = _public_releases(updates)
+    mine = [u for u in public if str(u.get("data_version")).split(" ")[0] == version]
+    return max(mine, key=lambda u: _iso(u.get("date")) or "") if mine else None
+
+
+def release_date(updates: list, version: str) -> str | None:
+    return _iso((this_release(updates, version) or {}).get("date"))
+
+
+@dataclass
+class TodayPayload:
+    """一次取数（或重放）的产出。`cn=None` 表示这一版地点码表里没有中国那一档。"""
+
+    blobs: dict[str, object]  # 文件名 → 解析后的 JSON
+    bodies: dict[str, bytes]  # 文件名 → 原样字节，归档与 sha256 都按 DATASET_FILES 顺序来
+    key_dir: Path | None
+    version: str
+    reach: str
+    http: int | None
+    ms: int
+    api_base: str
+    cn: dict | None
+    n_pops: int
+
+
+def _china(pops: list) -> dict | None:
+    return next((p for p in pops if p.get("country_iso3") == COUNTRY_ISO3), None)
+
+
+def load_payload(offline: bool) -> TodayPayload:
+    """离线重放 `data/raw` 里的归档，联网则解析版本号、取回四份 JSON 并归档。"""
     if offline:
         key_dir = raw.newest_dir(SOURCE, "factsheet.json")
         if not key_dir:
-            raise SystemExit(f"离线重放需要先有一份归档：data/raw/{SOURCE}/*/factsheet.json 不存在")
-        major, version, reach = "3", key_dir.name, "offline"
+            raise SystemExit(
+                f"离线重放需要先有一份归档：data/raw/{SOURCE}/*/factsheet.json 不存在"
+            )
+        major, version, reach, http, ms = "3", key_dir.name, "offline", None, 0
         bodies = {n: (key_dir / n).read_bytes() for n in DATASET_FILES}
-        blobs = {n: json.loads(b.decode("utf-8")) for n, b in bodies.items()}
+        blobs: dict[str, object] = {n: json.loads(b.decode("utf-8")) for n, b in bodies.items()}
     else:
         major, version, http, ms, reach = _resolve_version()
-        base = f"{API_ROOT}v{major}/{version}/"
-        bodies: dict[str, bytes] = {}
-        blobs: dict[str, object] = {}
+        bodies = {}
+        blobs = {}
         for name, path in zip(
             META_FILES, ("meta/update/", "meta/cancers/all/", "meta/populations/all/")
         ):
-            blobs[name], ms, http, reach, bodies[name] = _get_json(base + path, ms)
-            time.sleep(0.2)
-        pops = blobs["meta_populations.json"]
-        assert isinstance(pops, list)
-        cn = [p for p in pops if p.get("country_iso3") == COUNTRY_ISO3]
-        if not cn:
-            return ProbeResult(
-                verdict="blocked",
-                message=f"{base}meta/populations/all/ 的 {len(pops)} 个地点里没有 iso3={COUNTRY_ISO3}"
-                "——中国这一档被上游挪走或改码了，本探针不猜新码",
-                criteria=CRITERIA,
-                reachability=reach,
-                http_status=http,
-                latency_ms=ms or None,
+            blobs[name], ms, http, reach, bodies[name] = _get_json(
+                f"{API_ROOT}v{major}/{version}/{path}", ms
             )
-        name = "factsheet.json"
-        blobs[name], ms, http, reach, bodies[name] = _get_json(
-            f"{base}factsheet/population/{cn[0]['country']}/?{FS_PARAMS}", ms
+            time.sleep(0.2)
+
+    api_base = f"{API_ROOT}v{major}/{version}/"
+    pops = blobs["meta_populations.json"]
+    assert isinstance(pops, list)
+    cn = _china(pops)
+    if cn is None:
+        # 不写归档：没有 factsheet 的半套响应留下档来，下次离线重放会挑中一个不完整的数据集
+        return TodayPayload(
+            blobs=blobs, bodies=bodies, key_dir=None, version=version, reach=reach,
+            http=http, ms=ms, api_base=api_base, cn=None, n_pops=len(pops),
         )
-        key_dir = raw.archive_dir(SOURCE, version)
-        for n, b in bodies.items():
-            (key_dir / n).write_bytes(b)
+    if offline:
+        return TodayPayload(
+            blobs=blobs, bodies=bodies, key_dir=key_dir, version=version, reach=reach,
+            http=http, ms=ms, api_base=api_base, cn=cn, n_pops=len(pops),
+        )
+
+    name = "factsheet.json"
+    blobs[name], ms, http, reach, bodies[name] = _get_json(
+        f"{api_base}factsheet/population/{cn['country']}/?{FS_PARAMS}", ms
+    )
+    d = raw.archive_dir(SOURCE, version)
+    for n, b in bodies.items():
+        (d / n).write_bytes(b)
+    return TodayPayload(
+        blobs=blobs, bodies=bodies, key_dir=d, version=version, reach=reach,
+        http=http, ms=ms, api_base=api_base, cn=cn, n_pops=len(pops),
+    )
+
+
+def probe(offline: bool = False) -> ProbeResult:
+    pl = load_payload(offline)
+    http, ms, reach, version, key_dir = pl.http, pl.ms, pl.reach, pl.version, pl.key_dir
+    bodies, blobs = pl.bodies, pl.blobs
+    if pl.cn is None:
+        return ProbeResult(
+            verdict="blocked",
+            message=f"{pl.api_base}meta/populations/all/ 的 {pl.n_pops} 个地点里没有 "
+            f"iso3={COUNTRY_ISO3}——中国这一档被上游挪走或改码了，本探针不猜新码",
+            criteria=CRITERIA,
+            reachability=reach,
+            http_status=http,
+            latency_ms=ms or None,
+        )
 
     updates, cancers, pops, fs = (
         blobs["meta_update.json"],
@@ -154,7 +223,7 @@ def probe(offline: bool = False) -> ProbeResult:
     assert isinstance(pops, list) and isinstance(fs, dict)
     rows = fs["dataset"]
 
-    cn = next(p for p in pops if p.get("country_iso3") == COUNTRY_ISO3)
+    cn = pl.cn
     by_key = {(r["cancer_code"], r["sex"], r["type"]): r for r in rows}
     codes = {int(c["id"]) for c in cancers}
 
@@ -191,8 +260,17 @@ def probe(offline: bool = False) -> ProbeResult:
     age_fields = sorted({k for r in rows for k in r if "age" in k.lower()})
     public, pre = _public_releases(updates)
     releases = sorted({str(u.get("data_version")) for u in public})
-    mine = [u for u in public if str(u.get("data_version")).split(" ")[0] == version]
-    this_rel = max(mine, key=lambda u: _iso(u.get("date")) or "") if mine else None
+    this_rel = this_release(updates, version)
+    # 现患那一句要数出来再说：早先这里凭"1/3/5 年"三个词写成"一个键有 3 行"，
+    # 实测这一版 279 行里每个 (cancer,sex,type) 键都只有单行，三个年份是方法句里的词
+    dup = [
+        k
+        for k, n in collections.Counter(
+            (r["cancer_code"], r["sex"], r["type"]) for r in rows
+        ).items()
+        if n > 1
+    ]
+    prev_note = str(fs.get("description", {}).get("prevalence", ""))
 
     if covered == 0:
         verdict = "blocked"
@@ -208,8 +286,10 @@ def probe(offline: bool = False) -> ProbeResult:
         f"crude_rate / cum_risk_74。中国 country={cn['country']}（iso3 {COUNTRY_ISO3}），"
         f"估算方法码 incidence={cn.get('method_incidence')} / mortality={cn.get('method_mortality')}"
         f"（{len(cancers)} 个癌种码 × {len(pops)} 个地点码表随包取回归档）。"
-        f"注意现患(type 2)在一个 (sex,cancer) 上有 3 行而不带期间标签——1/3/5 年现患混在一起，"
-        f"落库前必须回 description 里读口径句，不能默认取第一行。"
+        f"现患(type 2)的 (cancer_code,sex,type) 键实测重复 {len(dup)} 个，"
+        f"即每个键单行、行上没有期间标签——1 年 / 3 年 / 5 年现患混在同一个数里，"
+        f"口径只在 description.prevalence：「{prev_note}」。"
+        f"落库时这句口径必须随行带上，也不许把这一行标成「5 年现患」。"
     )
     if missing:
         msg += f"这些病在本版码表或响应里没配对上：{', '.join(missing)}。"

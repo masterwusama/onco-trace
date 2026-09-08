@@ -15,12 +15,20 @@
 每页的口径是分裂的，这一点必须原样带出来而不是取一个代表值：
 年度序列的脚注写 "New cases come from SEER 12 ... All Races, Both Sexes"，
 年龄分布表上方写 "SEER 21 2019–2023, Age-Adjusted"（发病）与 "U.S. 2020–2024"（死亡），
-生存率分期表是另一个年份窗。同一页里三套 cohort，落 stat_cohort 时按 metric 各记各的。
+生存率分期表是另一个年份窗。同一页里三套 cohort，落库时按 metric 各记各的口径。
+
+`parse_page` 除了量给判据用的那些计数，还把每张表的原始行与整页的段落按文档序留着——
+装载器要的是格子里的值（哪一年多少率、哪个分期百分之几），判据只要格子的个数。
+两者共用这一份解析，否则会分叉成分页"有 8 张表"而库里"没有那 8 张表的值"。
+每张表的口径行不在同一个位置：年龄分布在表**上方**、分期在表**下方**、
+年度序列的脚注在表**下方**但不是 "SEER/U.S." 开头的口径行而是 "New cases come from…"。
+所以取口径行按表种各走一条方向，不是一条规则套三处。
 """
 from __future__ import annotations
 
 import re
 import time
+from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
@@ -78,14 +86,63 @@ SEX_RE = re.compile(r"^(Males|Females)$")
 # SEER 没给白血病发布 "5-Year Relative Survival by Stage at Diagnosis"：实测 leuks.html
 # 全文找不到这个标题，scrapeTable 只有 7 张（其余 17 页都是 8 张），生存率只给一条
 # 1975–2018 的时间序列。白血病是血液肿瘤，本来就没有实体瘤分期，这是源的事实而非解析失败，
-# 所以按页豁免。不能按 category='heme' 豁免——NHL 与骨髓瘤同为 heme，却各有 Ann Arbor
-# 分期表（实测 5 档、4 档）。
+# 所以按页豁免。不能按 category='heme' 豁免——同为血液肿瘤的 NHL 与骨髓瘤各有分期表
+# （实测 NHL 是 Ann Arbor 5 档、骨髓瘤是 SEER 汇总档 4 档；体系逐页按源自己写的措辞认，
+# 不按病类推——见 load/stats.py 的 scheme_of）。
 # 豁免名单要反过来盯着：上游哪天补了这张表，这里就得把它捡回来，所以豁免页若真解析出
 # 分期档会在消息里点名，而不是悄悄多算一页。
 NO_STAGE = frozenset({"leukemia"})
 
 # targets.py 的 sex → 页面上该出现的性别证据
 SEX_OF = {"both": ("Males", "Females"), "female": ("Females",), "male": ("Males",)}
+
+# 口径行的开头。探针取 `vintages` 时另加一条 len<80 的去重上限，装载器要整段原文
+# （NHL 分期表下面那句 "SEER 17 2016–2022, … by Ann Arbor Stage.Statistics by stage
+# only include…" 就超了 80，跟着探针的那条线走就会丢掉这一维的年份窗）
+COHORT = re.compile(r"^(SEER|U\.S\.)\s")
+# 装载器认的"口径行"比探针宽：年度序列的脚注 ("New cases come from SEER 12. Deaths come
+# from U.S. Mortality. … Rates are Age-Adjusted.") 与头条值下面那句年份窗
+# ("Based on data from SEER 21 …") 都是口径，只是都不以 SEER/U.S. 开头
+COHORT_ANY = re.compile(
+    r"^(SEER|U\.S\.|New cases come from|Deaths come from|Based on data from)"
+)
+# At a Glance 与 Survival Statistics 两处都写着同一个头条生存率
+YEAR5 = re.compile(r"^5-Year\s*Relative Survival$")
+PCT = re.compile(r"^\d+(?:\.\d+)?%$")
+# 头条值自己的年份窗写在另一句里："Based on data from SEER 21 (Excluding IL) 2016–2022.
+# Gray figures represent…" — 第一个句号之前才是窗，之后是图表说明
+BASED_ON = re.compile(r"^Based on data from (.+?)\.")
+
+
+@dataclass(frozen=True)
+class StatTable:
+    """一张 scrapeTable 原样留着：装载器要格子里的值，判据只要格子的个数。"""
+
+    id: str
+    kind: str  # TITLES 认出来的表种；年度序列表靠表头认，不在这张表的 kind 里
+    sex: str  # 表上方最近的 <h5>，费率表按性别各出一张
+    pos: int  # 文档序位置，用来找它上下的口径行
+    head: list[list[str]]
+    rows: list[list[str]]
+
+
+def para_after(paras: list[tuple[int, str]], pos: int, pred=None) -> str:
+    """文档序在这张表之后的第一个 <p>（可选按谓词筛）。"""
+    return next(
+        (t for p, t in paras if p > pos and (pred is None or pred.match(t))),
+        "",
+    )
+
+
+def para_before(paras: list[tuple[int, str]], pos: int, pred=None) -> str:
+    """文档序在这张表之前的最后一个 <p>（可选按谓词筛）。"""
+    out = ""
+    for p, t in paras:
+        if p >= pos:
+            break
+        if pred is None or pred.match(t):
+            out = t
+    return out
 
 
 def _clean(el) -> str:
@@ -125,11 +182,24 @@ def _obs(body_rows: list[list[str]], i: int) -> dict:
     return {"n": len(yrs), "y0": yrs[0] if yrs else None, "y1": yrs[-1] if yrs else None}
 
 
+def kind_of(t: StatTable) -> str:
+    """年度序列表按表头认，不靠 <strong> 标题：它挂在 "At a Glance" 小节下，没有专属标题。"""
+    return "year_series" if t.head and t.head[0][:1] == ["Year"] else t.kind
+
+
 def parse_page(body: bytes) -> dict:
-    """按文档顺序认领每张 scrapeTable，返回这一页量到的东西。"""
+    """按文档顺序走一遍：原始结构留在 `tables` / `paras` 里，判据用的计数从它们算出来。
+
+    装载器要的是格子里的值（哪一年多少率、哪个分期百分之几、哪个年龄组占几成），
+    判据只要格子的个数。两件事共用这一趟解析，分成两份就会分叉成
+    "页面有 8 张表"而库里"没有那 8 张表的值"。
+    """
     doc = LH.fromstring(body.decode("utf-8", "replace"))
     page: dict = {
         "h1": "",
+        "tables": [],
+        "paras": [],
+        "headline": {"rate": None, "window": ""},
         "year_series": None,
         "stage_survival": None,
         "age_incidence": None,
@@ -143,63 +213,97 @@ def parse_page(body: bytes) -> dict:
         page["h1"] = _clean(h1[0])
 
     kind = sex = ""
-    for el in doc.iter():
+    expect = False  # 刚走过一句 "5-Year Relative Survival"，下一个 <strong> 就是它的值
+    for pos, el in enumerate(doc.iter()):
         if el.tag in ("h2", "h3"):
             kind = sex = ""  # 换小节了，前面认领到的标题与性别都不再有效
+            expect = False
         elif el.tag == "strong":
             t = _clean(el)
             for rx, k in TITLES:
                 if rx.search(t):
                     kind, sex = k, ""
                     break
+            # 页面上 <strong> 到处都是（种族表每行的组名也是），只认紧跟在
+            # "5-Year Relative Survival" 后面且形如百分数的那一个
+            if expect and PCT.match(t):
+                expect = False
+                if page["headline"]["rate"] is None:
+                    page["headline"]["rate"] = t
         elif el.tag == "h5":
             t = _clean(el)
             if SEX_RE.match(t):
                 sex = t
         elif el.tag == "p":
-            # 表上方的口径行，形如 "SEER 21 2019–2023, Age-Adjusted"
             t = _clean(el)
-            if re.match(r"^(SEER|U\.S\.)\s", t) and len(t) < 80 and t not in page["vintages"]:
+            if t:
+                page["paras"].append((pos, t))
+            # 表上方的口径行，形如 "SEER 21 2019–2023, Age-Adjusted"
+            if COHORT.match(t) and len(t) < 80 and t not in page["vintages"]:
                 page["vintages"].append(t)
+            m = BASED_ON.match(t)
+            if m and not page["headline"]["window"]:
+                page["headline"]["window"] = m.group(1)
+            expect = bool(YEAR5.match(t))
         elif el.tag == "table" and str(el.get("id", "")).startswith("scrapeTable"):
             head, body_rows = _split(el)
-            hdr = head[0] if head else []
-            sub = head[1] if len(head) > 1 else []
-            if hdr and hdr[0] == "Year":
-                mets = [h for h in hdr[1:] if h]
-                # 第一行表头每个 metric 是 colspan=2，第二行把它拆成 Observed / Modeled Trend。
-                # Modeled Trend 是 SEER 的拟合线不是观测值，落 stat_cohort 时必须与 Observed
-                # 分成两列，否则"表里有 50 行"会被当成"有 50 个观测"——最近两三年常常只有拟合值。
-                # 配对只能按位置 zip：写成 for m in mets for s in sub 会得到 4×8=32 个重名组合，
-                # 字典推导一折叠，四个 metric 里三个的观测年数全成 0（实测踩过）。
-                cols = (
-                    [f"{m} — {sub[2 * k + j]}" for k, m in enumerate(mets) for j in (0, 1)]
-                    if len(sub) == 2 * len(mets)
-                    else mets
-                )
-                ys = [r[0] for r in body_rows if r and r[0].isdigit()]
-                page["year_series"] = {
-                    "metrics": mets,
-                    "n_years": len(ys),
-                    "y0": ys[0] if ys else None,
-                    "y1": ys[-1] if ys else None,
-                    "observed": {c: _obs(body_rows, i) for i, c in enumerate(cols)},
-                }
-            elif kind == "stage_survival":
-                page["stage_survival"] = {
-                    "n": len(body_rows),
-                    "labels": [r[0] for r in body_rows if r],
-                }
-            elif kind in ("age_incidence", "age_mortality"):
-                page[kind] = {"n": len(body_rows), "bands": [r[0] for r in body_rows if r]}
-            elif kind in ("incidence_rate", "mortality_rate"):
-                if sex:
-                    page["rate_sexes"].add(sex)
-                # 这两张表没有表头行，6 行是种族/民族分组，性别拆成 Males/Females 两张表
-                # （各自的 <h5> 标签紧邻在表前）。记下来是给 stat_cohort 映射当字段清单用。
-                if kind == "incidence_rate" and not page["race_groups"]:
-                    page["race_groups"] = [r[0] for r in body_rows if r]
+            page["tables"].append(StatTable(str(el.get("id")), kind, sex, pos, head, body_rows))
+
+    _measure(page)
     return page
+
+
+def _measure(page: dict) -> None:
+    """从留在 page 里的原始表算出判据要用的计数。就地写回，不另返一份。"""
+    for tbl in page["tables"]:
+        head, body_rows = tbl.head, tbl.rows
+        hdr = head[0] if head else []
+        sub = head[1] if len(head) > 1 else []
+        if kind_of(tbl) == "year_series":
+            mets = [h for h in hdr[1:] if h]
+            # 第一行表头每个 metric 是 colspan=2，第二行把它拆成 Observed / Modeled Trend。
+            # Modeled Trend 是 SEER 的拟合线不是观测值，落库时必须与 Observed 分开
+            # （stat_fact 走 estimate_basis、survival 走 is_observed），否则"表里有 50 行"会被当成"有 50 个观测"——最近两三年常常只有拟合值。
+            # 配对只能按位置 zip：写成 for m in mets for s in sub 会得到 4×8=32 个重名组合，
+            # 字典推导一折叠，四个 metric 里三个的观测年数全成 0（实测踩过）。
+            paired = len(sub) == 2 * len(mets)
+            cols = (
+                [f"{m} — {sub[2 * k + j]}" for k, m in enumerate(mets) for j in (0, 1)]
+                if paired
+                else mets
+            )
+            ys = [r[0] for r in body_rows if r and r[0].isdigit()]
+            page["year_series"] = {
+                "metrics": mets,
+                "cols": cols,
+                # 与数据列一一对应：装载器按列位取格子里的值，metric 与二级表头的配对必须由
+                # 这里给出去，让它自己重算就是再踩一次上面那个笛卡尔积的坑
+                "cols_meta": [
+                    {
+                        "metric": mets[i // 2] if paired else c,
+                        "sub": sub[2 * (i // 2) + i % 2] if paired else "",
+                    }
+                    for i, c in enumerate(cols)
+                ],
+                "n_years": len(ys),
+                "y0": ys[0] if ys else None,
+                "y1": ys[-1] if ys else None,
+                "observed": {c: _obs(body_rows, i) for i, c in enumerate(cols)},
+            }
+        elif tbl.kind == "stage_survival":
+            page["stage_survival"] = {
+                "n": len(body_rows),
+                "labels": [r[0] for r in body_rows if r],
+            }
+        elif tbl.kind in ("age_incidence", "age_mortality"):
+            page[tbl.kind] = {"n": len(body_rows), "bands": [r[0] for r in body_rows if r]}
+        elif tbl.kind in ("incidence_rate", "mortality_rate"):
+            if tbl.sex:
+                page["rate_sexes"].add(tbl.sex)
+            # 这两张表没有表头行，6 行是种族/民族分组，性别拆成 Males/Females 两张表
+            # （各自的 <h5> 标签紧邻在表前）。记下来是给装载器当字段清单用。
+            if tbl.kind == "incidence_rate" and not page["race_groups"]:
+                page["race_groups"] = [r[0] for r in body_rows if r]
 
 
 def _last_modified(res) -> str | None:
@@ -234,7 +338,24 @@ def sex_verdict(code: str, page: dict) -> str:
     return "missing"
 
 
-def probe(offline: bool = False) -> ProbeResult:
+@dataclass
+class StatPayload:
+    """18 页取回来并解析完的结果。装载器与探针共用这一份，不各下一遍。"""
+
+    pages: dict[str, dict]  # target.code → parse_page 的产出
+    bodies: dict[str, bytes]  # slug → 原样字节，归档与 sha256 都按这个顺序来
+    dead: list[str]
+    blocked: list[str]
+    version: str
+    key_dir: Path | None
+    reach: str
+    worst_ms: int
+    statuses: set[int]
+    total_bytes: int
+
+
+def load_payload(offline: bool) -> StatPayload:
+    """离线重放 `data/raw` 里的归档，联网则逐页取回并归档。"""
     unknown = [t.code for t in TARGETS if t.code not in SLUG]
     if unknown:
         raise SystemExit(f"SLUG 里缺这些 target：{unknown}")
@@ -293,6 +414,33 @@ def probe(offline: bool = False) -> ProbeResult:
         if not offline:
             time.sleep(0.4)
 
+    version = max(lms) if lms else (key_dir.name if offline else "")
+    if not offline and bodies:
+        d = raw.archive_dir(SOURCE, version or "unknown")
+        for slug, b in sorted(bodies.items()):
+            (d / f"{slug}.html").write_bytes(b)
+        key_dir = d
+
+    return StatPayload(
+        pages=pages,
+        bodies=bodies,
+        dead=dead,
+        blocked=blocked,
+        version=version,
+        key_dir=key_dir,
+        reach=reach,
+        worst_ms=worst_ms,
+        statuses=statuses,
+        total_bytes=total_bytes,
+    )
+
+
+def probe(offline: bool = False) -> ProbeResult:
+    pl = load_payload(offline)
+    pages, dead, blocked = pl.pages, pl.dead, pl.blocked
+    key_dir, version, reach = pl.key_dir, pl.version, pl.reach
+    total_bytes = pl.total_bytes
+
     if not pages:
         return ProbeResult(
             verdict="dead" if dead else "blocked",
@@ -301,13 +449,6 @@ def probe(offline: bool = False) -> ProbeResult:
             dataset_code=DATASET,
             reachability=reach,
         )
-
-    version = max(lms) if lms else (key_dir.name if offline else "")
-    if not offline and bodies:
-        d = raw.archive_dir(SOURCE, version or "unknown")
-        for slug, b in sorted(bodies.items()):
-            (d / f"{slug}.html").write_bytes(b)
-        key_dir = d
 
     # ---- 逐维判定 ----
     ys_ok = [c for c, p in pages.items() if p["year_series"] and p["year_series"]["n_years"] >= 5]
@@ -471,13 +612,13 @@ def probe(offline: bool = False) -> ProbeResult:
         sample=sample,
         raw_path=raw.rel(key_dir) if key_dir else None,
         reachability=reach,
-        http_status=statuses.pop() if len(statuses) == 1 else None,
-        latency_ms=worst_ms or None,
+        http_status=pl.statuses.pop() if len(pl.statuses) == 1 else None,
+        latency_ms=pl.worst_ms or None,
         dataset_code=DATASET,
         upstream_version=version,
         release_date=version or None,
         release_bytes=total_bytes,
         release_sha256=raw.sha256_bytes(
-            b"".join(bodies[s] for s in sorted(bodies))
+            b"".join(pl.bodies[s] for s in sorted(pl.bodies))
         ),
     )

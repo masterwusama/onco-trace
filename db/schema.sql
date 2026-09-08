@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS `source_probe_log` (
   `rows_seen` int DEFAULT NULL COMMENT '0 有两种含义（源给空集 / 解析器没匹配上），靠 message 区分，不要在报告里当成一回事',
   `diseases_covered` int DEFAULT NULL COMMENT '18 病基准里被覆盖到的个数，基准清单在 etl/onco_etl/targets.py',
   `diseases_total` int DEFAULT NULL,
-  `fields_seen` json DEFAULT NULL COMMENT '实测到的列名/字段路径，写 stat_cohort 映射时照着它来',
+  `fields_seen` json DEFAULT NULL COMMENT '实测到的列名/字段路径，装载器落库时照着它来',
   `sample` json DEFAULT NULL COMMENT '3~5 条真实样本行，避免写映射时反复去敲源站额度',
   `verdict` enum('ok','partial','empty','dead','blocked','unlicensed') NOT NULL,
   `criteria` varchar(255) DEFAULT NULL COMMENT '本次探针的判据原文，出报告时要能一一对上',
@@ -293,7 +293,7 @@ CREATE TABLE IF NOT EXISTS `stat_fact` (
   `source_id` int NOT NULL,
   `dataset_code` varchar(64) NOT NULL DEFAULT '' COMMENT '一个源可发多个数据集：GCO 的 gco-today-national 与 gco-overtime-series 是两套码空间',
   `dataset_release_id` bigint DEFAULT NULL,
-  `metric` varchar(32) NOT NULL COMMENT '装载器写进去的值见 docs/MVP裁定.md：incidence/mortality/prevalence 各带 _asr/_crude_rate/_total，SEER 的 new_case_rate/death_rate/survival_rate_5y 年度序列，age_case_pct/age_death_pct，研究层的 trial_count/publication_count。不用 enum 是因为每接一个新接口都会添值，改 enum 要一次迁移',
+  `metric` varchar(32) NOT NULL COMMENT '装载器写进去的值见 docs/MVP裁定.md：incidence/mortality/prevalence 各带 _asr/_crude_rate/_total，SEER 的 new_case_rate/death_rate 年度序列（五年存活率不在长表里，整维在 survival），age_case_pct/age_death_pct，研究层的 trial_count/publication_count。不用 enum 是因为每接一个新接口都会添值，改 enum 要一次迁移',
   `unit` enum('count','per_100k','percent','ratio') NOT NULL,
   `value` decimal(16,4) NOT NULL COMMENT 'SEER 用 "-" 表示"无观测"而不是 0，那种格子直接不落行',
   `year` int NOT NULL DEFAULT 0 COMMENT '0＝不是年度序列：国家级单点估算、年龄组占比、按声明词命中的条数都是 0',
@@ -311,16 +311,17 @@ CREATE TABLE IF NOT EXISTS `stat_fact` (
   KEY `idx_stat_disease` (`disease_id`,`metric`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- 分期别五年生存率。stat_fact 存的是全分期的年度序列，这张表存一页分期表，两者不重复写。
+-- 五年存活率整维：一页分期表、At a Glance 的全期头条、5-Year Relative Survival 的逐年序列。
+-- 三层都在这张表，stat_fact 不重复写同一个数——同一个数进两张表，迟早有一边先漂。
 CREATE TABLE IF NOT EXISTS `survival` (
   `id` int NOT NULL AUTO_INCREMENT,
   `disease_id` int NOT NULL,
   `source_id` int NOT NULL,
   `dataset_code` varchar(64) NOT NULL DEFAULT '',
   `dataset_release_id` bigint DEFAULT NULL,
-  `stage` varchar(64) NOT NULL COMMENT '实体瘤是 Localized/Regional/Distant/Unknown 四档，NHL 与骨髓瘤是 Ann Arbor，白血病整页没有分期表（源不提供，不是解析失败）只有 All stages 一行',
+  `stage` varchar(64) NOT NULL COMMENT '实体瘤与骨髓瘤是 Localized/Regional/Distant/Unknown 四档（骨髓瘤同为血液肿瘤，源用的却是 SEER 汇总档），NHL 是 Ann Arbor 五档，白血病整页没有分期表（源不提供，不是解析失败），它只有 All stages 的头条与逐年序列',
   `stage_scheme` enum('seer_summary','ann_arbor','none') NOT NULL COMMENT '两套分期不是一套，画在同一个轴上会让人以为可以横着比',
-  `window_label` varchar(64) NOT NULL DEFAULT '' COMMENT 'SEER 标的年份窗原文',
+  `window_label` varchar(64) NOT NULL DEFAULT '' COMMENT '分期档与头条是 SEER 标的年份窗原文；逐年序列那一层的标签是拼的（队列 + Observed/Modeled Trend + 该列非空格子的跨度），同年两个值靠它分开——源写在这一列下的年份窗句子只说 1975–2018，观测行与拟合行共用它就会撞唯一键',
   `year` int NOT NULL DEFAULT 0,
   `rate_pct` decimal(6,2) NOT NULL,
   `is_observed` tinyint(1) NOT NULL DEFAULT '1' COMMENT '0＝Modeled Trend 拟合值。五年生存率 Observed 止于 2018、拟合到 2023，最后五年全是外推，不标注等于把预测当观测发布',

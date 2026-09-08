@@ -17,10 +17,10 @@ for _s in (sys.stdout, sys.stderr):
         _s.reconfigure(encoding="utf-8", errors="replace")
 
 from .. import joblog
-from . import anatomy, base, disease
+from . import anatomy, base, disease, stats
 
 # 顺序即执行顺序，新增装载器往里加一行（`disease` 保持在最前，其余靠它拿外键）
-_MODULES = (disease, anatomy)
+_MODULES = (disease, anatomy, stats)
 REGISTRY = {m.__name__.rsplit(".", 1)[-1]: m for m in _MODULES}
 
 Ctx = base.Ctx

@@ -19,7 +19,7 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"。矩阵本身�
 | 叙述 / 介绍段 | **不进** | `who_factsheet` `partial` 4/18，判据线 ≥12/18 | 全站 fact sheet 只有 73 个主题、癌种专页 18 病里 4 病有 ≥3 条要点清单。 disease 页不给叙述段落，或只给一句由症状/统计维拼出来的中性导语 |
 | 危险因素清单 | **部分进** | GWAS Catalog `partial` 18/18（按 `targets.GWAS_URI` 声明档；只认主条目是 14/18） | 只作为 `role='genetic'` 一层（位点 + OR/β + 95% CI），它是遗传易感性不是可干预暴露 |
 | 危险因素归因强度（PAF） | **不进** | `gbd_cra` `blocked` 0/18、`gbd_results` `blocked` 0/18 | 两个 IHME 面的效应量都在授权门后（vizhub 数据面四个路由全 401）。`paf` 列建而不填，UI 不画数值榜，标"需 IHME 授权" |
-| 发病量（国家单点） | **进** | `globocan` `ok` 18/18 | 2024 年估算、国家级单点，34 个癌种码；现患(type 2)同键有 3 行不带期间标签，取数前必须回 description 读口径 |
+| 发病量（国家单点） | **进** | `globocan` `ok` 18/18 | 2024 年估算、国家级单点，34 个癌种码；现患(type 2)每个 (cancer,sex,type) 键实测单行且不带期间标签——1 年 / 3 年 / 5 年现患混在同一个数里，口径只在 `description.prevalence` 那一句，落库时随行带上且不许标成「5 年现患」 |
 | 发病年龄组 / 趋势 | **进**（双列） | `gco_overtime` `partial` 18/18 有值 | 中国是 5 个登记处覆盖 60% 人口的外推、最新一年 2017；与 Cancer Today 的国家级估算不同源，**两列分开存、不可相减成趋势** |
 | 死亡年龄组（中国） | **不进** | `who_gho` `empty` 0/18、GBD `blocked` | 判据两半（≥10 年龄组 × 中国行）在 GHO 里从不同时出现在同一指标上；GBD 那半等注册账号后重测 |
 | 五年存活率 | **进** | `seer_statfacts` `ok` 18/18 | 分期档 17/18（leukemia 整页无分期表，源本身不给）；观测窗止于 2018、2019–2023 是拟合值；**美国 SEER 口径，页面必须写明不是中国数据** |
@@ -156,8 +156,8 @@ assoc 17,064 / lit 724,160 / drugs 1,036）。代价如实记在 `targets.py`：
 | 组织学 | `histology_code` + `disease_histology` | `basis='via_site_recode'`——这个映射是自己从交叉表推出来的，不是源说过。只收行为码 /3（803 个码里 657 个），逐病展开 129–212 条 |
 | 症状清单 + 中文名 | `symptom` | 按源分行，`name_lang` 分 en/zh；`source_id`、`source_url`、`anchor` 随行，可点回原文 |
 | 危险因素（遗传那一层） | `risk_factor` + `disease_risk_factor` | `role` 分 genetic/exposure，`uri_tier` 分主条目与声明档，`p_value_text` 与 `pvalue_mlog` 两列分开存 |
-| 发病量 / 年龄组 / 趋势 | `stat_fact`（长表） | `estimate_basis` 就是"两列分开存、不可相减成趋势"那一句的落点 |
-| 五年存活率 | `survival` | `stage_scheme` 分 SEER 汇总档与 Ann Arbor，`is_observed` 分开观测值与拟合值 |
+| 发病量 / 年龄组 / 趋势 | `stat_fact`（长表） | `estimate_basis` 就是"两列分开存、不可相减成趋势"那一句的落点。装的是 GLOBOCAN 国家单点、GCO 逐年 × 18 档 5 岁组、SEER 的新发率与死亡率年度序列（观测与拟合分 `registry_cohort` / `model_trend`）与 SEER 的 8 档宽年龄组构成 |
+| 五年存活率 | `survival` | `stage_scheme` 分 SEER 汇总档与 Ann Arbor，`is_observed` 分开观测值与拟合值。整维三层都在这一张表：分期档、At a Glance 的全期头条、5-Year Relative Survival 的逐年序列——`stat_fact` 不重复写同一个数（实测一次装载里逐格相同的有 1674 行） |
 | 在招试验 | `trial` | 只建 CT 白名单实测到的列，没有日期列 |
 | 前沿文献 | `publication` | `ext_key` 是 UPSERT 键（pmid→doi→标题哈希），计数走 `stat_fact` 的 `query_count` |
 | 靶点 / 药 | `target` + `disease_target` + `drug` | `node_used` 记下这个病用的是宽档还是主条目 |

@@ -11,12 +11,18 @@
 
 响应里 `type` 只有 0/1（新发/死亡），逐年序列按 (type, sex, cancer) 一行一行给，
 每行的 `ages` / `populations` / `age_specific_rate` 是 18 个 5 岁档 + `unk` 三个同构字典。
+
+取数与归档抽在 `load_payload` 里，判据只读它的产出——装载统计层时不必再下一遍。
+三个同构字典的键是 `"1"`…`"18"` 加 `"unk"`，标签按位置对齐 `app_config.json` 里那个有序数组；
+`"unk"` 没有标签，装载时整档丢掉而不是编一个「未知年龄」出来。
 """
 from __future__ import annotations
 
 import json
 import re
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 from .. import raw
 from ..fetch import fetch
@@ -83,7 +89,30 @@ def _get_json(url: str, ms: int) -> tuple[object, int, int, str, bytes]:
     return d, ms, r.status, r.reachability, r.body
 
 
-def probe(offline: bool = False) -> ProbeResult:
+@dataclass
+class OvertimePayload:
+    """一次取数（或重放）的产出。`cn=None` 表示这一版地点码表里没有中国那一档。"""
+
+    blobs: dict[str, object]  # 文件名 → 解析后的 JSON
+    bodies: dict[str, bytes]  # 文件名 → 原样字节，归档、bytes 与 sha256 都按 ARCHIVE_FILES 顺序来
+    cfg: dict  # app_config.json：版本号、api_base、有序年龄档标签、指标清单
+    key_dir: Path | None
+    major: str
+    release: str
+    reach: str
+    http: int | None
+    ms: int
+    api_base: str
+    cn: dict | None
+    n_pops: int
+
+    def series(self, fname: str) -> list:
+        """一条逐年序列。装载器走这里，不必碰私有的 _unwrap。"""
+        return _unwrap(self.blobs[fname])
+
+
+def load_payload(offline: bool) -> OvertimePayload:
+    """离线重放 `data/raw` 里的归档，联网则从 app 构建产物读版本号、取回五份 JSON 并归档。"""
     http: int | None = None
     ms = 0
     if offline:
@@ -92,10 +121,13 @@ def probe(offline: bool = False) -> ProbeResult:
             raise SystemExit(
                 f"离线重放需要先有一份归档：data/raw/{SOURCE}/*/data_incidence.json 不存在"
             )
-        cfg = json.loads((key_dir / "app_config.json").read_text(encoding="utf-8"))
-        major, release, reach = cfg["api_major"], cfg["api_release"], "offline"
-        blobs = {n: json.loads((key_dir / n).read_text(encoding="utf-8")) for n in ARCHIVE_FILES}
-        sizes = {n: (key_dir / n).stat().st_size for n in ARCHIVE_FILES}
+        bodies = {n: (key_dir / n).read_bytes() for n in ARCHIVE_FILES}
+        blobs: dict[str, object] = {
+            n: json.loads(b.decode("utf-8")) for n, b in bodies.items()
+        }
+        cfg = blobs["app_config.json"]
+        assert isinstance(cfg, dict)
+        major, release, reach, http, ms = cfg["api_major"], cfg["api_release"], "offline", None, 0
     else:
         html, ms, http, reach0 = _js(APP, ms)
         vend, idx = VENDORS_RE.search(html), INDEX_RE.search(html)
@@ -123,10 +155,8 @@ def probe(offline: bool = False) -> ProbeResult:
             # 版本来自 app 构建产物本身，不是我们拼的 URL——记录来源，下次换版好核对
             "version_source": vend.group(1),
         }
-        blobs: dict[str, object] = {"app_config.json": cfg}
-        bodies: dict[str, bytes] = {
-            "app_config.json": json.dumps(cfg, ensure_ascii=False).encode("utf-8")
-        }
+        blobs = {"app_config.json": cfg}
+        bodies = {"app_config.json": json.dumps(cfg, ensure_ascii=False).encode("utf-8")}
         for name, path in (
             ("meta_cancers.json", "meta/cancers/all/"),
             ("meta_populations.json", "meta/populations/all/"),
@@ -134,38 +164,59 @@ def probe(offline: bool = False) -> ProbeResult:
             blobs[name], ms, http, reach_, bodies[name] = _get_json(base + path, ms)
             reach = "proxy" if "proxy" in (reach, reach_) else reach
             time.sleep(0.2)
-        pops = _unwrap(blobs["meta_populations.json"])
-        cn = [p for p in pops if p.get("country_iso3") == COUNTRY_ISO3]
-        if not cn:
-            return ProbeResult(
-                verdict="blocked",
-                message=f"{base}meta/populations/all/ 的 {len(pops)} 个地点里没有 iso3={COUNTRY_ISO3}"
-                "——中国这一档不在这一版覆盖里（或被改码），本探针不猜新码",
-                criteria=CRITERIA,
-                reachability=reach,
-                http_status=http,
-                latency_ms=ms or None,
-            )
-        cn = cn[0]
-        # 路径是 data/{indicator}/{type}/{sex}/{country}/{cancer}/，type 0 新发、1 死亡
-        for name, ty in zip(SERIES_FILES, ("0", "1")):
-            blobs[name], ms, http, reach_, bodies[name] = _get_json(
-                f"{base}data/rate/{ty}/0_1_2/{cn['country']}/all/", ms
-            )
-            reach = "proxy" if "proxy" in (reach, reach_) else reach
-            time.sleep(0.2)
-        key_dir = raw.archive_dir(SOURCE, f"r{release}")
-        for n, b in bodies.items():
-            (key_dir / n).write_bytes(b)
-        sizes = {n: len(b) for n, b in bodies.items()}
+
+    api_base = f"{API_ROOT}v{major}/{release}/"
+    pops = _unwrap(blobs["meta_populations.json"])
+    cn = next((p for p in pops if p.get("country_iso3") == COUNTRY_ISO3), None)
+    if cn is None:
+        # 不写归档：没有逐年序列的半套响应留下档来，下次离线重放会挑中一个不完整的数据集
+        return OvertimePayload(
+            blobs=blobs, bodies=bodies, cfg=cfg, key_dir=None, major=major, release=release,
+            reach=reach, http=http, ms=ms, api_base=api_base, cn=None, n_pops=len(pops),
+        )
+    if offline:
+        return OvertimePayload(
+            blobs=blobs, bodies=bodies, cfg=cfg, key_dir=key_dir, major=major, release=release,
+            reach=reach, http=http, ms=ms, api_base=api_base, cn=cn, n_pops=len(pops),
+        )
+
+    # 路径是 data/{indicator}/{type}/{sex}/{country}/{cancer}/，type 0 新发、1 死亡
+    for name, ty in zip(SERIES_FILES, ("0", "1")):
+        blobs[name], ms, http, reach_, bodies[name] = _get_json(
+            f"{api_base}data/rate/{ty}/0_1_2/{cn['country']}/all/", ms
+        )
+        reach = "proxy" if "proxy" in (reach, reach_) else reach
+        time.sleep(0.2)
+    d = raw.archive_dir(SOURCE, f"r{release}")
+    for n, b in bodies.items():
+        (d / n).write_bytes(b)
+    return OvertimePayload(
+        blobs=blobs, bodies=bodies, cfg=cfg, key_dir=d, major=major, release=release,
+        reach=reach, http=http, ms=ms, api_base=api_base, cn=cn, n_pops=len(pops),
+    )
+
+
+def probe(offline: bool = False) -> ProbeResult:
+    pl = load_payload(offline)
+    blobs, cfg, key_dir = pl.blobs, pl.cfg, pl.key_dir
+    release, reach = pl.release, pl.reach
+    http, ms = pl.http, pl.ms
+    if pl.cn is None:
+        return ProbeResult(
+            verdict="blocked",
+            message=f"{pl.api_base}meta/populations/all/ 的 {pl.n_pops} 个地点里没有 "
+            f"iso3={COUNTRY_ISO3}——中国这一档不在这一版覆盖里（或被改码），本探针不猜新码",
+            criteria=CRITERIA,
+            reachability=reach,
+            http_status=http,
+            latency_ms=ms or None,
+        )
 
     cancers = _unwrap(blobs["meta_cancers.json"])
     pops = _unwrap(blobs["meta_populations.json"])
     inc = _unwrap(blobs["data_incidence.json"])
     mort = _unwrap(blobs["data_mortality.json"])
-    if offline:
-        cn = next(p for p in pops if p.get("country_iso3") == COUNTRY_ISO3)
-        cfg = blobs["app_config.json"]
+    cn = pl.cn
     band_labels = cfg["ages_labels"] if isinstance(cfg, dict) else []
 
     def measure(rows: list, kind: str) -> tuple[int, dict, list]:
@@ -279,10 +330,6 @@ def probe(offline: bool = False) -> ProbeResult:
         # 这一版 API 不带发布日，只有登记年；用最新登记年当 release_date 会把"数据到 2017"
         # 说成"这一版 2017 年发布"，宁缺
         release_date=None,
-        release_bytes=sum(sizes.values()),
-        release_sha256=raw.sha256_bytes(
-            b"".join(
-                (key_dir / n).read_bytes() if offline else bodies[n] for n in ARCHIVE_FILES
-            )
-        ),
+        release_bytes=sum(len(b) for b in pl.bodies.values()),
+        release_sha256=raw.sha256_bytes(b"".join(pl.bodies[n] for n in ARCHIVE_FILES)),
     )
