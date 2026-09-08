@@ -16,8 +16,11 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"，两个产出�
 21 个候选源的 `status` 已从占位的 `candidate` 翻成 12 `active` / 8 `paused` / 1 `rejected`。
 15 张业务表已按这份裁定建好并落库（`db/migrations/0002_business_tables.sql`，与 `db/schema.sql`
 同内容）。每张表的每一列都对着 `source_probe_log` 里的 `fields_seen` 与 `sample` 来——
-探针没量到的字段不建列，源给出口径差别的地方拆成列存而不是混成一列。下一步是装载器（把探针里
-已验证的解析规则改成写库）与后端、前端。
+探针没量到的字段不建列，源给出口径差别的地方拆成列存而不是混成一列。
+装载器已开工：`etl/onco_etl/load/` 是底座（拿版本号、幂等写行、出处五列），
+第一个装载器把疾病主档装进了 `disease`（18 行，`ncit_id` 18/18 非空）。
+其余按维度分批推进——器官树与组织学 → 统计与生存率 → 症状 → 危险因素 → 研究层，
+后端与前端接在这之后。
 P0 只剩一件收尾的事：IHME 的免费非商用账号已注册、凭据已填进 `.env`，但数值入口的登录是
 Azure AD B2C 换 token（scope `…/data-api/data.read`，界面前还有一层 Cloudflare），这条取数路还没实现。
 接上之前 `gbd_results` / `gbd_cra` 两支探针记 `paused`，中国死亡年龄组与危险因素归因强度（PAF）
@@ -114,7 +117,8 @@ HP 症状注释各只有约 1% 覆盖，HPO / Orphanet / NCIt 的实测覆盖见
 │ raw.py       data/raw 归档+sha256 │   │ MySQL db_ot (localhost:3306)    │
 │ joblog.py    etl_job_log 运行史   │   └─────────────────────────────────┘
 │ probe*       覆盖度探针           │   ┌─ 前端（待建）Vue 3 + Vite ──────┐
-│ matrix.py    裁定 → 覆盖度文档    │   └─────────────────────────────────┘
+│ load/        探针解析 → 业务表行  │   └─────────────────────────────────┘
+│ matrix.py    裁定 → 覆盖度文档    │
 └──────────────────────────────────┘
 ```
 
@@ -139,6 +143,9 @@ ops\etl.ps1 probe             # 专项覆盖度探针，不带 --code 就是全�
 ```powershell
 python db/tests/run.py status            # 表行数 + 三道门禁（源授权 / 业务表出处列 / 两份 DDL 一致）
 python etl/tests/run.py                  # 解析回归，用仓库内的上游页面，不联网
+ops\etl.ps1 load --list                  # 有哪些装载器
+ops\etl.ps1 load --code disease --offline # 把疾病主档从声明 + MONDO 归档装进 disease
+ops\etl.ps1 load --code disease --dry-run # 整批写进去再回滚，只验约束不留下数据
 ops\etl.ps1 probe-reach --code mondo     # 只探指定源的可达性
 ops\etl.ps1 probe --list                 # 有哪些专项探针
 ops\etl.ps1 probe --code mondo --offline # 用 data/raw 归档离线重放，不重新下载
@@ -154,7 +161,7 @@ ops\etl.ps1 status                       # 库现状速览
 | 目录 | 内容 |
 |---|---|
 | `db/` | `schema.sql` 是全量建表脚本，`migrations/` 是增量变更（`0002` 是 15 张业务表，DDL 与 `schema.sql` 那段同内容、改结构两边一起改，`status` 会比对），`tests/run.py` 是迁移与断言跑测器 |
-| `etl/` | `onco_etl` 采集与探针层，`python -m onco_etl` 运行；`--offline` 重放读本机 `data/raw/` 归档 |
+| `etl/` | `onco_etl` 采集层，`python -m onco_etl` 运行；`probes/` 是覆盖度探针（只写裁定），`load/` 是装载器（复用探针里那份解析写业务表），`--offline` 重放读本机 `data/raw/` 归档 |
 | `etl/tests/` | 解析回归：`fixtures/` 存代表页的上游原样字节，`run.py` 先比 sha256 再断言解析结果 |
 | `docs/` | `数据源探针计划.md`（判据与逐批实测）、`数据源覆盖度.md`（脚本生成，勿手改）、`MVP裁定.md`（P0 出口：建哪些表） |
 | `data/` | `raw/` 原始响应归档、`exports/` 待抽查草稿，都不入库不提交 |

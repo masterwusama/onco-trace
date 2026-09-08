@@ -36,13 +36,20 @@ def engine() -> Engine:
 
 
 @contextmanager
-def tx() -> Iterator[Connection]:
-    """写事务：正常退出才 commit，抛异常整笔回滚——批次要么全落要么零写入。"""
+def tx(dry_run: bool = False) -> Iterator[Connection]:
+    """写事务：正常退出才 commit，抛异常整笔回滚——批次要么全落要么零写入。
+
+    `dry_run=True` 走同样的代码路径但在结尾回滚：装载器要能在不碰存量数据的前提下
+    验一遍"这批行写得进去吗"，而复制一份写库逻辑来 dry-run 迟早会和真写入分叉。
+    """
     conn = engine().connect()
     trans = conn.begin()
     try:
         yield conn
-        trans.commit()
+        if dry_run:
+            trans.rollback()
+        else:
+            trans.commit()
     except BaseException:
         trans.rollback()
         raise

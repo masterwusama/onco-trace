@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from .. import db
+from .. import db, releases
 from ..clock import now_ts
 
 
@@ -80,30 +80,16 @@ def record(code: str, res: ProbeResult) -> None:
             },
         )
         if res.release_sha256:
-            # 同一版本重复登记会撞唯一键，用 upsert 而不是 INSERT IGNORE：
-            # 后者会把"重跑刷新了 fetched_at"这件事一起吞掉
-            conn.execute(
-                db.text(
-                    "INSERT INTO `dataset_release`"
-                    " (`source_id`,`dataset_code`,`upstream_version`,`release_date`,"
-                    "  `fetched_at`,`bytes`,`sha256`,`rows_seen`,`raw_path`)"
-                    " VALUES (:sid,:ds,:ver,:rd,:ts,:bytes,:sha,:rows,:raw)"
-                    " ON DUPLICATE KEY UPDATE"
-                    # COALESCE：某次探针没解析出发布日时不许把已有的日期抹成 NULL
-                    " `release_date`=COALESCE(VALUES(`release_date`),`release_date`),"
-                    " `fetched_at`=VALUES(`fetched_at`),"
-                    " `bytes`=VALUES(`bytes`),`sha256`=VALUES(`sha256`),"
-                    " `rows_seen`=VALUES(`rows_seen`),`raw_path`=VALUES(`raw_path`)"
-                ),
-                {
-                    "sid": sid,
-                    "ds": res.dataset_code,
-                    "ver": res.upstream_version or "",
-                    "rd": res.release_date,
-                    "ts": now_ts(),
-                    "bytes": res.release_bytes,
-                    "sha": res.release_sha256,
-                    "rows": res.rows_seen,
-                    "raw": res.raw_path,
-                },
+            # 与装载器共用 releases.register：两边各写一份 upsert，
+            # 迟早会有一边忘了 COALESCE 或者忘了回填 raw_path
+            releases.register(
+                conn,
+                sid,
+                res.dataset_code,
+                upstream_version=res.upstream_version,
+                release_date=res.release_date,
+                body_bytes=res.release_bytes,
+                sha256=res.release_sha256,
+                rows_seen=res.rows_seen,
+                raw_path=res.raw_path,
             )

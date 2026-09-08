@@ -5,12 +5,15 @@
     probe [--code X] [--list]
           [--offline]               专项探针：实测行数、18 病覆盖度与字段，够不够填这一维
     probe-status                    每源每份数据集最近一次的裁定，P0 覆盖度矩阵的雏形
+    load [--code X] [--list]
+         [--offline] [--dry-run]    装载器：把探针验过的解析写成业务表的行
     status                          库现状速览
 
-probe-reach 只回答"主机答不答话"，probe 才回答"取回来的东西能不能用"。
-两者都写 source_probe_log，靠 dataset_code 区分（reach / sitetype-icdo3 / mondo.obo）。
+probe-reach 只回答"主机答不答话"，probe 才回答"取回来的东西能不能用"，
+load 则把那些"能用"的东西真正落成行——三者分工不同，probe 不写业务表，load 不写裁定。
+两支探针都写 source_probe_log，靠 dataset_code 区分（reach / sitetype-icdo3 / mondo.obo）。
 probe --offline 用 data/raw 里最近一次归档重放，不联网：MONDO 的 .obo 有 51 MB，
-解析规则改一行重抓一次要七分钟，而那七分钟里上游什么都没变。
+解析规则改一行重抓一次要七分钟，而那七分钟里上游什么都没变。load 的 --offline 同义。
 """
 from __future__ import annotations
 
@@ -324,6 +327,20 @@ def main(argv: list[str]) -> int:
         help="用 data/raw 里最近一次归档重放，不联网。解析规则改一行不必重下 51 MB",
     )
 
+    p = sub.add_parser("load", help="装载器：把探针验过的解析写成业务表的行")
+    p.add_argument("--code", action="append", help="只跑指定装载器，可重复")
+    p.add_argument("--list", action="store_true", help="有哪些装载器")
+    p.add_argument(
+        "--offline",
+        action="store_true",
+        help="读 data/raw 里最近一次归档，不联网。与 probe --offline 同一份证据",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="整批写进去再回滚：验唯一键与 NOT NULL 约束，不动存量数据",
+    )
+
     sub.add_parser("probe-status", help="每源每份数据集最近一次探针裁定")
     sub.add_parser("matrix", help="由探针裁定生成 docs/数据源覆盖度.md")
     sub.add_parser("status", help="库现状速览")
@@ -345,6 +362,14 @@ def main(argv: list[str]) -> int:
             return probes.run(a.code, a.sleep, a.offline)
         if a.cmd == "probe-status":
             return cmd_probe_status()
+        if a.cmd == "load":
+            # 延迟导入：装载器会拖进 openpyxl 一类重依赖，status 不该为它付启动成本
+            from . import load as loaders
+
+            if a.list:
+                print("已实现装载器：" + ", ".join(loaders.available()))
+                return 0
+            return loaders.run(a.code, a.offline, a.dry_run)
         if a.cmd == "matrix":
             from . import matrix
 
