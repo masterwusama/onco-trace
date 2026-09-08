@@ -66,8 +66,10 @@ COLUMNS: tuple[Column, ...] = (
     # 白血病那页源本身不给分期表，探针按 targets.py 的性别/口径声明记 stage_exempt
     Column("survival", "seer_statfacts", "statfacts-html", "SEER 分期档",
            lambda r: (r.get("stages") or 0) >= 3 or bool(r.get("stage_exempt"))),
+    # 口径是「主条目 + targets.GWAS_URI 声明档」，P1 把四病的同级档裁成了声明；
+    # 只认主条目的严格数留在 sample 的 pass_main 与探针 message 里
     Column("risk", "gwas_catalog", "associations-ontology-annotated-full",
-           "GWAS 主条目位点", "pass_main"),
+           "GWAS 位点（声明档）", "pass_declared"),
     Column("symptom", "nci_pdq_html", "symptom-items-html", "PDQ 症状清单（英）"),
     Column("symptom", "wikidata", "zh-label-symptom", "现成中文症状清单"),
     Column("narrative", "who_factsheet", "narrative-sections", "WHO 癌种专页",

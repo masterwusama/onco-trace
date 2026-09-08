@@ -17,7 +17,7 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"。矩阵本身�
 | 症状清单 | **进** | `nci_pdq_html` `ok` 18/18（209 条，5 病目测 72/72，precision 100%） | L2 规则解析，非 NER；`source_id` 必须随行落库 |
 | 症状中文名 | **部分进** | `wikidata` `partial` 7/18（PDQ 英文 18/18 + 中文 7/18：中文维基 5 病 ∪ WHO 中文版 3 病） | 按源分行 `(source_id, disease_code, name, name_lang)`，**不做翻译列**。11 病没有中文清单，页面按病显示"暂无可靠中文来源"而不是留白 |
 | 叙述 / 介绍段 | **不进** | `who_factsheet` `partial` 4/18，判据线 ≥12/18 | 全站 fact sheet 只有 73 个主题、癌种专页 18 病里 4 病有 ≥3 条要点清单。 disease 页不给叙述段落，或只给一句由症状/统计维拼出来的中性导语 |
-| 危险因素清单 | **部分进** | GWAS Catalog `partial` 14/18 | 只作为 `role='genetic'` 一层（位点 + OR/β + 95% CI），它是遗传易感性不是可干预暴露 |
+| 危险因素清单 | **部分进** | GWAS Catalog `partial` 18/18（按 `targets.GWAS_URI` 声明档；只认主条目是 14/18） | 只作为 `role='genetic'` 一层（位点 + OR/β + 95% CI），它是遗传易感性不是可干预暴露 |
 | 危险因素归因强度（PAF） | **不进** | `gbd_cra` `blocked` 0/18、`gbd_results` `blocked` 0/18 | 两个 IHME 面的效应量都在授权门后（vizhub 数据面四个路由全 401）。`paf` 列建而不填，UI 不画数值榜，标"需 IHME 授权" |
 | 发病量（国家单点） | **进** | `globocan` `ok` 18/18 | 2024 年估算、国家级单点，34 个癌种码；现患(type 2)同键有 3 行不带期间标签，取数前必须回 description 读口径 |
 | 发病年龄组 / 趋势 | **进**（双列） | `gco_overtime` `partial` 18/18 有值 | 中国是 5 个登记处覆盖 60% 人口的外推、最新一年 2017；与 Cancer Today 的国家级估算不同源，**两列分开存、不可相减成趋势** |
@@ -119,11 +119,12 @@ assoc 17,064 / lit 724,160 / drugs 1,036）。代价如实记在 `targets.py`：
   （只做过可达性，没做过内容级实测——MVP 不依赖它们，要启用得先补探针）。
 - `rejected`（1）：who_gho（内容级探针判空 0/18，且这一维换源补不上）。
 
-## 四、这份裁定还没有覆盖的事
+## 四、P1 建表时要一并处理的事
 
-- GWAS 的 4 病（breast_female, uterus, pancreas, esophagus）按主条目不达线，
-  但关联大量挂在同级组织学档上，并进来可达 18/18。这要做成 `targets.py` 的一列声明
-  （逐病候选档与行数已在探针 sample 里），属 P1 的建表前裁定，**不能由探针自动放宽**。
+- ✅ GWAS 的 4 病（breast_female, uterus, pancreas, esophagus）按主条目不达线——这条已在
+  P1 的 C1a 收口：裁成 `targets.GWAS_URI` 逐病声明（形状同 `OT_NODE`，不收分子亚型、癌前
+  与良性档），矩阵那一列改读"主条目 + 声明档"口径 = 18/18，只认主条目的 14/18 原样留在
+  探针 sample 的 `pass_main`。三口径的分工与逐病代价写在 `docs/数据源探针计划.md` 的 B4 那节。
 - SEER 年龄组只有 8 档宽分组，画 5 岁组标化率要另走 SEER*Explorer 的未公开 JSON 接口。
 - 六个 `paused` 的码表源如果 P1 里哪个维要启用，得先补一支内容级探针，
   否则矩阵那一列永远没有逐病格。

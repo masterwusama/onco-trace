@@ -14,9 +14,11 @@ B4 的 CRA 那一半量到"关联有、强度没有"（效应量 0/18）。这�
     不构成障碍，方向反过来即可。但按 targets 声明的**主条目** URI 精确命中，有行的只有
     16/18（breast_female、uterus 一行都没有），按判据（≥3 个带效应量与区间的独立位点）
     只剩 14/18——pancreas 主条目 12 行全无区间、esophagus 并掉无区间的只剩 1 个位点。
-    关联大量挂在同级组织学档（breast carcinoma、endometrial carcinoma）上，并进来是
-    18/18，但那要人工裁定才算数。所以本探针同时给两个数——主条目命中（严格）与
-    同级候选档展开（上界），候选档连行数一起进 sample，等 P1 裁定成声明列。
+    关联大量挂在同级组织学档（breast carcinoma、endometrial carcinoma）上，并进来可达
+    18/18，但那要人工裁定才算数：P1 已把这四病裁成 `targets.GWAS_URI` 一份声明。
+    所以本探针报三个数——主条目命中（严格，14/18）、主条目+声明档（这一列落库用的口径）、
+    未声明的关键词候选档（上界，逐档连行数一起进 sample）。要再放宽必须是改那份声明，
+    不许探针自己并档。
   ② `OR or BETA` 是一列混装。全表值 <0 的只有 6 个，方向写在 CI 文本里
     （`[0.036] unit decrease` 这类注记 84 万行），所以 β 的符号不在这列里；
     而 OR 与 β 在区间同为正时从形态上分不开。落库想分 `effect_kind` 只能整列留"未判定"，
@@ -48,15 +50,15 @@ from pathlib import Path
 from .. import raw
 from ..fetch import fetch
 from ..sources import BY_CODE
-from ..targets import TARGETS
+from ..targets import GWAS_URI, TARGETS
 from .result import ProbeResult
 
 SOURCE = "gwas_catalog"
 DATASET = "associations-ontology-annotated-full"
 CRITERIA = (
     "每病 ≥3 个独立危险因素带效应量（PAF 或 OR/RR + CI），可匿名编程取回；"
-    "GWAS 给的是位点×表型关联，按 targets 声明的主条目 URI 精确命中计，"
-    "同级组织学档展开只作上界上报"
+    "GWAS 给的是位点×表型关联，按 targets 声明的主条目 URI + `GWAS_URI` 声明档命中计，"
+    "未声明的同级档只作上界上报"
 )
 
 ZIP_NAME = "gwas-catalog-associations_ontology-annotated-full.zip"
@@ -292,11 +294,29 @@ def probe(offline: bool = False) -> ProbeResult:
     n_eff = n_ci = n_ci_interval = n_both = n_unit = n_neg = 0
     n_multi_uri = n_lab_mismatch = 0
     dates: list[str] = []
-    want = {t.mondo_id.replace(":", "_"): t.code for t in TARGETS}
+    # 疾病侧对齐表：主条目 URI 尾段 → 病码，再加 targets.GWAS_URI 声明的同级档。
+    # 声明里写冒号形式（与 mondo_id / OT_NODE 一致），尾段变换留在这里——只有这一列
+    # 的取值形态是 `…/obo/MONDO_0008903`，不该把这个知识漏进 targets.py。
+    main_of = {t.code: t.mondo_id.replace(":", "_") for t in TARGETS}
+    unknown = sorted(set(GWAS_URI) - set(main_of))
+    if unknown:
+        raise SystemExit(f"targets.GWAS_URI 声明了基准外的病码 {unknown}——"
+                         "这份声明是覆盖判据的一部分，路径写错的病会永远显示成「没覆盖」")
+    want = {m: c for c, m in main_of.items()}
+    for code, uris in GWAS_URI.items():
+        for u in (x.replace(":", "_") for x in uris):
+            if u == main_of[code]:
+                continue
+            if want.get(u, code) != code:
+                raise SystemExit(f"targets.GWAS_URI 把 {u} 同时声明给 {want[u]} 与 {code}"
+                                 "——一个档只能属于一个病，否则这条关联会被两个病各数一遍")
+            want[u] = code
     per: dict[str, dict] = {
-        t.code: {"main_rows": 0, "main_effci": 0, "main_multi_rows": 0,
-                 "main_loci": set(), "main_studies": set(),
-                 "main_traits": {}, "sib_rows": 0, "sib_effci": 0, "sib_loci": set(),
+        t.code: {"main_rows": 0, "main_effci": 0, "multi_rows": 0,
+                 "main_loci": set(), "main_studies": set(), "main_traits": {},
+                 "decl_rows": 0, "decl_effci": 0,
+                 "decl_loci": set(), "decl_studies": set(), "decl_traits": {},
+                 "sib_rows": 0, "sib_effci": 0, "sib_loci": set(),
                  "sib_studies": set(), "sib_traits": {}}
         for t in TARGETS}
 
@@ -365,19 +385,30 @@ def probe(offline: bool = False) -> ProbeResult:
             study = col(r, "STUDY ACCESSION")
 
             if hit:
-                # 命中主条目的行到此为止：再走下面那段，主条目档会出现在自己的候选档清单里
+                # 命中声明档的行到此为止：再走下面那段，声明档会出现在自己的候选档清单里
                 for code in hit:
                     p = per[code]
                     if not single:
                         # 目标档与别的档并在一行：那是 MR 研究的暴露×结局，不能算这一病自己的证据
-                        p["main_multi_rows"] += 1
+                        p["multi_rows"] += 1
                         continue
-                    p["main_rows"] += 1
-                    p["main_traits"][joined[:60]] = p["main_traits"].get(joined[:60], 0) + 1
+                    # 严格口径（只算主条目）与落库口径（主条目 + 声明档）分开累加：
+                    # 换声明不该把"主条目本身有没有数"这件事抹掉，那两个数都要能看见
+                    is_main = short[0] == main_of[code]
+                    label = joined[:60]
+                    p["decl_rows"] += 1
+                    p["decl_traits"][label] = p["decl_traits"].get(label, 0) + 1
+                    if is_main:
+                        p["main_rows"] += 1
+                        p["main_traits"][label] = p["main_traits"].get(label, 0) + 1
                     if effci:
-                        p["main_effci"] += 1
-                        p["main_loci"].add(locus)
-                        p["main_studies"].add(study)
+                        p["decl_effci"] += 1
+                        p["decl_loci"].add(locus)
+                        p["decl_studies"].add(study)
+                        if is_main:
+                            p["main_effci"] += 1
+                            p["main_loci"].add(locus)
+                            p["main_studies"].add(study)
                 continue
             if not single or not CANCER_RE.search(joined):
                 continue
@@ -397,23 +428,31 @@ def probe(offline: bool = False) -> ProbeResult:
     out = []
     for t in TARGETS:
         p = per[t.code]
-        both = p["main_loci"] | p["sib_loci"]
+        both = p["decl_loci"] | p["sib_loci"]
         out.append({
             "code": t.code, "name_en": t.name_en, "mondo_uri": t.mondo_id.replace(":", "_"),
+            "declared_uris": GWAS_URI.get(t.code, ()),
             "main_rows": p["main_rows"], "main_effci_rows": p["main_effci"],
-            "main_multi_uri_rows": p["main_multi_rows"],
+            "multi_uri_rows": p["multi_rows"],
             "main_loci": len(p["main_loci"]), "main_studies": len(p["main_studies"]),
+            "decl_rows": p["decl_rows"], "decl_effci_rows": p["decl_effci"],
+            "decl_loci": len(p["decl_loci"]), "decl_studies": len(p["decl_studies"]),
             "sib_rows": p["sib_rows"], "sib_loci": len(p["sib_loci"]),
             "sib_studies": len(p["sib_studies"]), "loci_all": len(both),
             "pass_main": len(p["main_loci"]) >= MIN_FACTORS,
+            "pass_declared": len(p["decl_loci"]) >= MIN_FACTORS,
             "pass_all": len(both) >= MIN_FACTORS,
             "main_labels": sorted(p["main_traits"].items(), key=lambda kv: -kv[1])[:3],
+            "declared_labels": sorted(p["decl_traits"].items(), key=lambda kv: -kv[1])[:6],
             "sibling_candidates": sorted(p["sib_traits"].items(), key=lambda kv: -kv[1])[:8],
         })
     cov = sum(1 for v in out if v["pass_main"])
+    cov_decl = sum(1 for v in out if v["pass_declared"])
     cov_all = sum(1 for v in out if v["pass_all"])
     zero = [v["code"] for v in out if not v["main_rows"]]
-    multi_hit = sum(p["main_multi_rows"] for p in per.values())
+    declared_only = [v["code"] for v in out if v["pass_declared"] and not v["pass_main"]]
+    missing = [v["code"] for v in out if not v["pass_declared"]]
+    multi_hit = sum(p["multi_rows"] for p in per.values())
 
     if not offline:
         (key_dir / META_NAME).write_text(
@@ -430,17 +469,21 @@ def probe(offline: bool = False) -> ProbeResult:
         f"而值本身为负的只有 {n_neg} 行——β 的方向不在数值列里，OR 与 β 在区间同为正时形态分不开，"
         f"`effect_kind` 只能整列留未判定。全表没有任何 PAF/归因分数列。"
         f"疾病侧：`{URI_COL}` 整列是混装的（EFO/OBA/MONDO/HP 都在），"
-        f"但癌种档正好落在 MONDO URI 上，按 targets 的 `mondo_id` 精确命中就行"
+        f"但癌种档正好落在 MONDO URI 上，按 targets 声明的 URI 精确命中就行"
         f"（B2 那个 EFO xref 5/18 的缺口在这里不构成障碍）；"
         f"多值分隔符实测是逗号不是分号——{n_multi_uri:,} 行一行带 2~7 个档"
         f"（MR 研究把暴露档与疾病档并在一行），按 `;` 切会整串落成一个 token、"
         f"尾档被当成该行唯一的档，那些 MR 行就伪装成这一病自己的证据，"
-        f"所以只有单档行算进命中，混档行按病进 sample 的 `main_multi_uri_rows`"
+        f"所以只有单档行算进命中，混档行按病进 sample 的 `multi_uri_rows`"
         f"（18 病合计 {multi_hit:,} 行）。"
-        f"但按主条目 ≥{MIN_FACTORS} 个带效应量位点的只有 {cov}/{len(TARGETS)}"
-        f"（主条目一行没有的：{', '.join(zero) or '—'}）；关联大量挂在同级组织学档上，"
-        f"把候选档并进来可达 {cov_all}/{len(TARGETS)}，逐病候选档与行数在 sample 里，"
-        f"等 P1 裁定成声明列再落库。"
+        f"覆盖分三个口径报，不许混：①只认 `mondo_id` 主条目，≥{MIN_FACTORS} 个带效应量位点的 "
+        f"{cov}/{len(TARGETS)}（主条目一行没有的：{', '.join(zero) or '—'}）；"
+        f"②主条目 + `targets.GWAS_URI` 声明档——①不达的 {len(GWAS_URI)} 病已在 P1 裁成声明"
+        f"（{', '.join(GWAS_URI)}，逐病代价写在那份注释里），按这一口径是 {cov_decl}/{len(TARGETS)}"
+        f"（靠声明档才达判据的：{', '.join(declared_only) or '—'}；仍未达的：{', '.join(missing) or '—'}）"
+        f"——落库按 ②，`diseases_covered` 与矩阵那一列都读它，①原样留在 sample 的 `pass_main`；"
+        f"③再并上没声明的关键词候选档是 {cov_all}/{len(TARGETS)}，那是上界不是结论，"
+        f"逐病候选档与行数在 sample 里，要并进来必须先改那份声明，探针不自己放宽档。"
         f"`{TRAIT_COL}` 与 URI 列共用逗号做连接符，两列拆出来的档数对不上的有 {n_lab_mismatch:,} 行"
         f"（有的档名自己就带逗号）——拆档只认 URI，label 只能整串用，"
         f"反过来按 label 拆会把一个档数成两个"
@@ -455,12 +498,14 @@ def probe(offline: bool = False) -> ProbeResult:
     if proxied:
         msg += "。这一趟有步骤走了代理，reachability 按「任一步落过代理」记"
     return ProbeResult(
-        verdict="partial" if cov and n_both else "empty",
+        verdict="partial" if cov_decl and n_both else "empty",
         message=msg,
         criteria=CRITERIA,
         rows_seen=rows,
-        # 判据要的是可干预暴露的效应量，位点不算，所以这里记的是严格口径
-        diseases_covered=cov,
+        # 判据要的是可干预暴露的效应量，位点不算；这里记的是「主条目 + GWAS_URI 声明档」
+        # 那一口径，也就是矩阵这一列与落库用的口径。严格口径（只认主条目）在 message 与
+        # sample 的 pass_main 里，两个数各自可见，不让换声明把主条目的空缺抹掉。
+        diseases_covered=cov_decl,
         diseases_total=len(TARGETS),
         fields_seen=hdr,
         sample=out,

@@ -156,6 +156,34 @@ BY_CODE = {t.code: t for t in TARGETS}
 # 两者都不是"父节点总是更大"：关联与文献在 MONDO 层级上不单调。
 OT_NODE: dict[str, str] = {"breast_female": "MONDO:0007254"}
 
+# GWAS Catalog 效应量维的**档位声明**：只有列在这里的病额外认领同级 MONDO 档，
+# 其余病只认 `mondo_id` 主条目。探针不许自己放宽——要放宽必须是改这份声明。
+# 依据是 B7c 实测（`source_probe_log` id=84）：按主条目精确命中只有 14/18 达判据，
+# 另四病的关联几乎全挂在同级组织学档上，主条目要么一行都没有，要么并掉无区间的只剩 1 个位点。
+# 收档原则与 `icd10` 那一列一致，只收**语义等于本病**的器官/组织级档：
+#   不收分子亚型（ER 阳性/阴性、三阴、子宫内膜样癌）、不收癌前与良性档
+#   （IPMN、pancreatic neoplasm、endometrial neoplasm）、不收家族史与蛋白测量档
+#   （family history of …、…measurement）。
+# 逐病代价：
+#   · breast_female：主条目 MONDO:0004379 全表 0 行，改认 breast carcinoma(1,832 行)
+#     与 breast cancer(319)。这两档都不分性别——与上面换 OT 节点是同一个代价，
+#     `sex=female` 的约束仍由 icd10/SEER/GCO 那几列保证，不靠这一列。
+#   · pancreas：主条目 12 行全无区间（0 个位点），只多认 exocrine pancreatic
+#     carcinoma(171)。它是 C25 的主体（PDAC），胰腺神经内分泌那一支 GWAS 没有档，
+#     所以这一档不是"挑行数大的"，是唯一有数的一档。
+#   · esophagus：主条目只剩 1 个位点；ESCC(50) 与 EAC(25) 是 C15 的两个组织学类型，
+#     再加器官级的 carcinoma of esophagus(30)，三档合起来才是这个病。
+#   · uterus：主条目 uterine corpus cancer(MONDO:0006003) 0 行，认 endometrial
+#     carcinoma(102) 与 endometrial cancer(28)。不认 uterine carcinoma(5) 与
+#     uterine cancer(4)——那一档把宫颈算进子宫体，正是 `mondo_id` 注释里
+#     "子宫体不用 uterine cancer" 的同一个理由。
+GWAS_URI: dict[str, tuple[str, ...]] = {
+    "breast_female": ("MONDO:0004989", "MONDO:0007254"),
+    "pancreas": ("MONDO:0005192",),
+    "esophagus": ("MONDO:0005580", "MONDO:0019086", "MONDO:0005028"),
+    "uterus": ("MONDO:0002447", "MONDO:0011962"),
+}
+
 
 def ot_node(t: Target) -> str:
     return OT_NODE.get(t.code, t.mondo_id)
