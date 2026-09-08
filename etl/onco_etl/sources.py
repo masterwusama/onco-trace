@@ -604,14 +604,35 @@ SOURCES: tuple[Source, ...] = (
         name="Wikidata / 中文维基百科",
         org="Wikimedia",
         source_type="association_db",
-        dimensions=("identity", "narrative"),
+        dimensions=("identity", "symptom", "narrative"),
         home_url="https://www.wikidata.org/",
         license="Wikidata CC0 / Wikipedia CC BY-SA 4.0",
         legal_note="Wikidata CC0 可自由使用；维基百科正文 CC BY-SA 需署名且同条款共享，转载要保留出处链接",
         fetch_mode="monthly",
         reliability="low",
-        evidence="本机实测到 Wikimedia 的 DNS 与连接全线超时，reachability 大概率为 blocked；"
-        "疾病条目的症状类属性填充度也未能验证，探针必须走代理重试",
+        evidence="探针实测（zh-label-symptom，2026-09-08，partial 7/18）："
+        "① 直连 Wikimedia 全线读超时，每一发都要落代理（代理侧约 1 s/请求，一趟 70 发上下约 15 分钟），"
+        "且一整趟里会撞上一到两次 CONNECT 抖动——_json 已按 3 次退避重试，"
+        "探针的 reachability 只按真正用上的那批响应算；"
+        "② 症状子树可用但不等于能用：Q169872 往下 wdt:P279* 有 10045 个实体、2158 个带 zh label，"
+        "拿它当英中词典去贴 PDQ 的 213 条症状能命中 168 条（78.9%），"
+        "但逐条目测只有 对 63 / 泛 43 / 错 62，precision 37.5%（判据线 80%）——"
+        "错的是另一个概念的译名（weight loss→减肥、loss of appetite→耳咽管開放症、"
+        "anemia→密穗蕨科），泛的是所有 *pain→疼痛、所有 swelling→水肿；"
+        "③ 按 PDQ 原文逐条查 wbsearchentities 的天花板只有 21.3%：169 个去重写法里 ≤2 词仅 36 个、"
+        "≥5 词占 91 个，而 Wikidata 查词条不查短语，36 个短词样本里 4 个根本没命中、"
+        "4 个命中却无中文标签，languages=zh 还是繁简混排；"
+        "④ 中文维基自己的症状章节是唯一中文能全对的一路，但只有 5/18 病有 ≥4 条真症状清单"
+        "（leukemia 10、uterus 9、myeloma 8、pancreas 5、colorectum 4；解析条数虚高，"
+        "colorectum 的 17 条里 13 条是分期定义、myeloma 那节标题本身就叫「症狀及併發症」），"
+        "11 病写成散文规则取不到、只有 liver 与 nhl 连章节都没有；"
+        "与 WHO 中文版并集才 7/18，离判据 12/18 还差 5 病——"
+        "所以中文症状名不做成翻译列，symptom 按 (source_id, disease_code, name, name_lang) 落；"
+        "⑤ 两处口径： titles 解析必须把 normalized / converted / redirects 三种边都走一遍再喂 "
+        "action=parse（它不认 converttitles）——只按字面标题匹配时 宫颈癌/甲状腺癌/肾癌/"
+        "多发性骨髓瘤 稳定 missingtitle，会被误报成「这病没有症状章节」，实测趟里就是这四个；"
+        "条目名还可能整页重定向（结直肠癌 → 大腸癌），action=parse 带 redirects=1 能跟上，"
+        "但繁简与别名的差异仍在，段标题要按简繁两套一起认（症状/症狀/病徵/臨床表現…）。",
     ),
 )
 

@@ -16,11 +16,13 @@ for _s in (sys.stdout, sys.stderr):
 from .. import joblog
 from . import (ctgov_v2, europepmc, gbd_cra, gbd_results, globocan, gco_overtime, gwas_catalog,
                icdo3_seer, mondo, nci_pdq_html, opentargets, seer_statfacts, who_factsheet,
-               who_gho)
+               who_gho, wikidata)
 from .result import ProbeResult, record
 
+# 顺序有讲究：wikidata 的分母是 nci_pdq_html 归档的症状条目，排它后面才能保证全量扫时先有归档
 _MODULES = (icdo3_seer, mondo, seer_statfacts, gbd_results, gbd_cra, gwas_catalog, globocan,
-            gco_overtime, who_gho, ctgov_v2, europepmc, opentargets, nci_pdq_html, who_factsheet)
+            gco_overtime, who_gho, ctgov_v2, europepmc, opentargets, nci_pdq_html, who_factsheet,
+            wikidata)
 REGISTRY = {m.SOURCE: m for m in _MODULES}
 
 

@@ -325,6 +325,7 @@ def main(argv: list[str]) -> int:
     )
 
     sub.add_parser("probe-status", help="每源每份数据集最近一次探针裁定")
+    sub.add_parser("matrix", help="由探针裁定生成 docs/数据源覆盖度.md")
     sub.add_parser("status", help="库现状速览")
 
     a = ap.parse_args(argv)
@@ -344,6 +345,13 @@ def main(argv: list[str]) -> int:
             return probes.run(a.code, a.sleep, a.offline)
         if a.cmd == "probe-status":
             return cmd_probe_status()
+        if a.cmd == "matrix":
+            from . import matrix
+
+            path = matrix.write_doc()
+            print(f"{path.relative_to(matrix.ROOT).as_posix()}："
+                  f"{len(matrix.COLUMNS)} 列 × {len(matrix.latest_probes())} 份探针裁定")
+            return 0
         return cmd_status()
     finally:
         db.dispose()
