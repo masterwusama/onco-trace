@@ -10,6 +10,11 @@ fixture 是上游原样字节（`etl/tests/fixtures/` 在 `.gitattributes` 里�
 
 归档该不该进仓库是按体积逐源判的：MONDO 51 MB、GWAS 整包 71 MB 不进，
 SEER 四页 340 KB 进——判据分支每支有一页在场上就够。
+
+症状那一页是唯一的例外，它不吃 fixture：三源的归档（PDQ 88 KB、WHO 27 KB、维基条目）都在
+`data/raw` 里而不进仓库，而它要锁的是装载器那两条判定规则的**行为**，不是上游字节，
+所以输入是合成的解析记录。真归档里的条数由装载器自己在跑库时报出来核对
+（`load --code symptoms` 的 message 就是那份对账单）。
 """
 from __future__ import annotations
 
@@ -26,8 +31,10 @@ for _s in (sys.stdout, sys.stderr):
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "etl"))
 
-from onco_etl.load import anatomy  # noqa: E402
+from onco_etl.load import anatomy, symptoms  # noqa: E402
+from onco_etl.targets import TARGETS  # noqa: E402
 from onco_etl.probes import mondo  # noqa: E402
+from onco_etl.probes import nci_pdq_html, who_factsheet, wikidata  # noqa: E402
 from onco_etl.probes import seer_statfacts as seer  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -146,7 +153,75 @@ def check_subsites(c: Checks) -> None:
     c.eq("subsite 其余病为空", sum(len(v) for k, v in got.items() if k not in ("lung", "leukemia")), 0)
 
 
-CHECKS = (("seer_statfacts", check_seer), ("anatomy_subsites", check_subsites))
+def check_symptoms(c: Checks) -> None:
+    """症状装载的两处判断。合成的解析记录，不联网也不读库——
+    这两步是这一维仅有的非机械环节，改错了不会自己冒出来。"""
+    lung = next(t for t in TARGETS if t.code == "lung")
+    p1, p2 = lung.pdq_pages
+    breast = next(t for t in TARGETS if t.code == "breast_female")
+
+    def page(path: str, items: list[str], mode: str = "list") -> dict:
+        head = "Signs and symptoms of something"
+        return {"path": path, "status": 200, "lastmod": "2026-02-10", "updated": "",
+                "mode": mode, "heading": head,
+                "items": [{"text": t, "anchor": f"_a{i}", "heading": head}
+                          for i, t in enumerate(items)]}
+
+    def payload(pages: dict) -> nci_pdq_html.PdqPayload:
+        return nci_pdq_html.PdqPayload(pages, "v", None, {}, "offline", None, 0)
+
+    ids = {"lung": 1, "breast_female": 2}
+    rows, collapsed, sentences = symptoms.pdq_rows(
+        payload({"lung": [page(p1, ["Cough", "Chest pain.", "Fatigue"]),
+                          page(p2, ["cough", "Weight loss"])]}), 6, 61, ids)
+    # 大小写与尾标点都算同一条症状（唯一键的排序规则 utf8mb4_0900_ai_ci 就是这么判的），
+    # 留下的是声明顺序第一页那一份——换了留哪一份，source_url 与 anchor 就跟着换
+    c.eq("pdq 归一后留几条", ([r["name"] for r in rows], collapsed, sentences),
+         (["Cough", "Chest pain.", "Fatigue", "Weight loss"], 1, 0))
+    c.eq("pdq 复述留声明首册", rows[0]["source_url"], nci_pdq_html.BASE + p1)
+    c.eq("pdq 行按源口径记 review_status", {r["review_status"] for r in rows}, {"spot_checked"})
+    c.eq("pdq name 原样存不剥句号", "Chest pain." in [r["name"] for r in rows], True)
+
+    _r, _cl, sentences = symptoms.pdq_rows(
+        payload({breast.code: [page(breast.pdq_pages[0], ["Symptoms vary by type.", "Early cancer "
+                                                          "often has no symptoms."], mode="sentence")]}),
+        6, 61, ids)
+    # 散文句不落：那两条讲的是"症状"这件事，不是任何一个症状项，且 anchor 只有 main-content
+    c.eq("pdq 散文句不落库", sentences, 2)
+
+    def aborts(what: str, code: str, n: int, want: str) -> None:
+        try:
+            got = wikidata.wiki_drops(code, n)
+            c.ok(what, False, f"没中止，返回 {len(got)} 条剔除")
+        except SystemExit as e:
+            ok = want in str(e)
+            c.ok(what, ok, "" if ok else f"中止理由不含「{want}」：{e}")
+
+    for code, (real, note) in wikidata.WIKI_EYEBALL.items():
+        dropped = {i for _why, ids_ in wikidata.WIKI_DROP.get(code, ()) for i in ids_}
+        c.ok(f"wiki_drops {code} 两份声明自洽 —— {note[:18]}",
+             wikidata.wiki_drops(code, real + len(dropped)).keys() == dropped)
+    aborts("wiki_drops 解析条数漂移就中止", "colorectum", 18, "不符")
+    aborts("wiki_drops 序号越界就中止", "pancreas", 5, "超出")
+    aborts("新冒出没人读过的清单不代判", "liver", 6, "目测")
+
+    rec = {"title": "胰臟癌", "sec": "症狀及徵象", "n": 7,
+           "items": [f"項{i}" for i in range(1, 8)], "why": ""}
+    wrows = symptoms.wiki_rows({"pancreas": rec}, 16, {"pancreas": 6})
+    c.eq("维基 剔除序号对上行", [r["review_status"] for r in wrows],
+         ["spot_checked"] * 4 + ["rejected"] * 3)
+    c.eq("维基行不挂发布", {r["dataset_release_id"] for r in wrows}, {None})
+    c.eq("维基行的语种与锚点", {(r["name_lang"], r["anchor"]) for r in wrows}, {("zh", "症狀及徵象")})
+
+    c.eq("WHO 症状节标题按同一正则取",
+         who_factsheet.sym_heading({"sections": ["重要事实", "症状", "治疗"]}), "症状")
+    c.eq("WHO 英文版 Symptoms 也认", who_factsheet.sym_heading({"sections": ["Overview", "Symptoms"]}),
+         "Symptoms")
+    c.eq("WHO 没有症状节就是空", who_factsheet.sym_heading({"sections": ["重要事实", "概述"]}), "")
+
+
+CHECKS = (("seer_statfacts", check_seer), ("anatomy_subsites", check_subsites),
+          ("symptom_rows", check_symptoms))
 
 
 def main() -> int:

@@ -7,7 +7,7 @@
 数据全部来自公开源抓取，仓库里没有人工录入模块。每个数字都带来源、口径与查阅时间；
 本站不做诊断，症状反查输出的是参考排序。
 
-## 当前进度：P0 收口、业务表已建齐，下一步是装载
+## 当前进度：P0 收口、装载已过症状维，下一批是危险因素
 
 P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"，两个产出都已在仓库里：
 [docs/数据源覆盖度.md](docs/数据源覆盖度.md)（13 列 × 16 份裁定，由
@@ -18,7 +18,7 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"，两个产出�
 同内容）。每张表的每一列都对着 `source_probe_log` 里的 `fields_seen` 与 `sample` 来——
 探针没量到的字段不建列，源给出口径差别的地方拆成列存而不是混成一列。
 装载器已开工：`etl/onco_etl/load/` 是底座（拿版本号、幂等写行、出处五列），
-疾病主档、器官树与组织学、统计层与生存率四批已落库——`disease` 18 行（`ncit_id` 18/18 非空）、
+疾病主档、器官树与组织学、统计层与生存率、症状四批已落库——`disease` 18 行（`ncit_id` 18/18 非空）、
 `anatomy_node` 133 个节点（82 个 SEER site recode + 51 个 MONDO 亚部位 term）、
 `histology_code` 657 个恶性形态学码，逐病挂载 85 条器官关系与 3,111 条组织学关系；
 `stat_fact` 16,398 行（GLOBOCAN 中国 2024 国家单点 162 / GCO Over Time 逐年 × 18 档 5 岁组
@@ -26,7 +26,12 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"，两个产出�
 （分期档 17 病 + 全期头条 18 病 + 五年存活率逐年序列，其中 882 行是 Joinpoint 拟合值）。
 五年存活率整维只在 `survival` 一张表里，长表不重复写同一个数；中国死亡年龄组这一维
 源侧就是 0 行，页面按空态显示。
-其余按维度分批推进——症状 → 危险因素 → 研究层，后端与前端接在这之后。
+`symptom` 270 行、18/18 病都有英文清单：PDQ 185 条（源侧 209 条清单条目，按页面声明顺序归一后
+吃掉 24 条"同一症状在多个组织学档里各写一遍"的复述；该源另有 4 条从散文句里抠出来的，句子不是
+症状项，不落）、中文维基条目 67 条、WHO 中文版 18 条（只有 3 病有症状节）。中文侧合起来只有
+7/18 病有现成清单，另 11 病的中文名按实测留空、不做翻译列；维基那 67 条里 32 条逐条目测判为
+分期定义、亚型描述、并发症或释义段，置 `rejected` 留痕而不是删掉——删了就没人知道为什么少了。
+其余按维度分批推进——危险因素 → 研究层，后端与前端接在这之后。
 P0 只剩一件收尾的事：IHME 的免费非商用账号已注册、凭据已填进 `.env`，但数值入口的登录是
 Azure AD B2C 换 token（scope `…/data-api/data.read`，界面前还有一层 Cloudflare），这条取数路还没实现。
 接上之前 `gbd_results` / `gbd_cra` 两支探针记 `paused`，中国死亡年龄组与危险因素归因强度（PAF）
@@ -148,11 +153,12 @@ ops\etl.ps1 probe             # 专项覆盖度探针，不带 --code 就是全�
 
 ```powershell
 python db/tests/run.py status            # 表行数 + 三道门禁（源授权 / 业务表出处列 / 两份 DDL 一致）
-python etl/tests/run.py                  # 解析回归，用仓库内的上游页面，不联网
+python etl/tests/run.py                  # 解析回归：仓库内的上游页面 + 构造的最小页，不联网
 ops\etl.ps1 load --list                  # 有哪些装载器
 ops\etl.ps1 load --code disease --offline # 把疾病主档从声明 + MONDO 归档装进 disease
 ops\etl.ps1 load --code anatomy --offline # 器官树与组织学：SEER 交叉表 + MONDO 亚部位 → 四张表
 ops\etl.ps1 load --code stats --offline  # 统计层：GLOBOCAN + GCO Over Time + SEER → stat_fact 与 survival
+ops\etl.ps1 load --code symptoms --offline # 症状：PDQ 英文 + 中文维基条目 + WHO 中文版 → symptom
 ops\etl.ps1 load --offline               # 全部装载器按注册顺序跑一遍
 ops\etl.ps1 load --code anatomy --dry-run # 整批写进去再回滚，只验约束不留下数据
 ops\etl.ps1 probe-reach --code mondo     # 只探指定源的可达性

@@ -18,9 +18,11 @@
    不是"覆盖多大地理范围"。
 3. **`year=0` 表示"这不是年度序列"**，不是"公元 0 年"：GLOBOCAN 的国家级单点估算、
    SEER 的年龄组构成占比都填 0，估算年份写在 `cohort_note` 与 `dataset_release.upstream_version`。
-4. **五年存活率一个数只落一张表：只进 `survival`。** SEER 年度序列表的三列度量有两个去处——
+4. **五年存活率一个数只落一张表：只进 `survival`。** SEER 年度序列表的四个表头列只有两个去处——
    新发率与死亡率进 `stat_fact`，5-Year Relative Survival 那一列拆出的 Observed / Modeled Trend
-   两栏进 `survival`。这不是顺手分家：`docs/MVP裁定.md` §五 把"发病量 / 年龄组 / 趋势"派给 `stat_fact`、
+   两栏进 `survival`。四个表头列里 "Rate of New Cases" 出现两次（SEER 8 与 SEER 12 两套队列），
+   所以它是同一 metric 配两个 `region` 而不是两行重复值。这不是顺手分家：
+   `docs/MVP裁定.md` §五 把"发病量 / 年龄组 / 趋势"派给 `stat_fact`、
    把"五年存活率"整维派给 `survival`，而 `survival.is_observed` 那列存在的理由就是分开观测值与
    拟合值。同一个数写进两张表，迟早有一边先漂——实测一次装载里逐格相同的有 1674 行。
 

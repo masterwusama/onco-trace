@@ -35,6 +35,8 @@ import json
 import re
 import time
 from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
 
 from lxml import etree, html as LH
 
@@ -311,57 +313,80 @@ def _sitemap() -> tuple[dict, int, str, int]:
     return rows, ms, reach, status
 
 
-def probe(offline: bool = False) -> ProbeResult:
-    ms = 0
-    reaches: list[str] = []
-    http: int | None = None
+@dataclass
+class PdqPayload:
+    """一次取数（或离线重放）的产出：`targets.pdq_pages` 声明页 → 解析结果。
+
+    探针与装载器共用这一份，因为装载器要的不是另一份事实，而是同一份事实的行形态。
+    两边各写一遍清单抽取，"探针说 209 条、库里 185 条"这种分叉不会自己冒出来。
+    """
+
+    pages: dict[str, list[dict]]
+    version: str
+    key_dir: Path | None
+    sizes: dict[str, int]
+    reach: str
+    http: int | None
+    ms: int
+
+
+def load_payload(offline: bool) -> PdqPayload:
+    """离线重放 `data/raw` 归档；联网取 sitemap + 声明页、解析、归档并出目测草稿。"""
     if offline:
         key_dir = raw.newest_dir(SOURCE, "pages.json")
         if not key_dir:
             raise SystemExit(f"离线重放要先有归档：data/raw/{SOURCE}/*/pages.json 不存在")
         pages = json.loads((key_dir / "pages.json").read_text(encoding="utf-8"))
-        reaches = ["offline"]
         sizes = {n: (key_dir / n).stat().st_size for n in ("pages.json", "index.json")}
-        version = key_dir.name
-    else:
-        index, m, reach, http = _sitemap()
-        ms += m
-        reaches.append(reach)
-        inv = {u[len(BASE):]: lm for u, lm in index.items() if u.startswith(BASE + "types/")}
-        pages = {}
-        for t in TARGETS:
-            recs = []
-            for path in t.pdq_pages:
-                tree, m, reach, status, final = _get(BASE + path)
-                ms += m
-                reaches.append(reach)
-                time.sleep(SLEEP)
-                ex = _extract(_sections(tree))
-                body = str(tree.xpath("string(//main)") or tree.xpath("string(//body)") or "")
-                stamp = tree.xpath("//footer//time/@datetime | //time/@datetime")
-                recs.append({
-                    "path": path, "status": status, "final_path": final[len(BASE):],
-                    "redirected": final[len(BASE):] != path, "in_sitemap": path in inv,
-                    "lastmod": inv.get(path, ""), "updated": (stamp[0][:10] if stamp else ""),
-                    "words": len(body.split()), "sections": ex["sections"],
-                    "heading": ex["heading"], "items": ex["items"],
-                    "items_freq": ex["items_freq"], "items_freq_word": ex["items_freq_word"],
-                    "mode": ex["mode"], "dropped": ex["dropped"],
-                })
-            pages[t.code] = recs
-            print(f"  {t.code:14s} " + "  ".join(
-                f"{r['path'].split('/')[-1][:34]}:{r['mode']}/{len(r['items'])}" for r in recs), flush=True)
-        version = max([r["lastmod"] or r["updated"] for rs in pages.values() for r in rs] or [today()])
-        key_dir = raw.archive_dir(SOURCE, version)
-        blobs = {"pages.json": pages, "index.json": inv}
-        sizes = {}
-        for n, b in blobs.items():
-            body_bytes = json.dumps(b, ensure_ascii=False).encode("utf-8")
-            (key_dir / n).write_bytes(body_bytes)
-            sizes[n] = len(body_bytes)
-        _drafts(pages)
+        return PdqPayload(pages, key_dir.name, key_dir, sizes, "offline", None, 0)
 
-    reach = "offline" if "offline" in reaches else ("proxy" if "proxy" in reaches else "direct")
+    ms = 0
+    reaches: list[str] = []
+    index, m, reach, http = _sitemap()
+    ms += m
+    reaches.append(reach)
+    inv = {u[len(BASE):]: lm for u, lm in index.items() if u.startswith(BASE + "types/")}
+    pages = {}
+    for t in TARGETS:
+        recs = []
+        for path in t.pdq_pages:
+            tree, m, reach, status, final = _get(BASE + path)
+            ms += m
+            reaches.append(reach)
+            time.sleep(SLEEP)
+            ex = _extract(_sections(tree))
+            body = str(tree.xpath("string(//main)") or tree.xpath("string(//body)") or "")
+            stamp = tree.xpath("//footer//time/@datetime | //time/@datetime")
+            recs.append({
+                "path": path, "status": status, "final_path": final[len(BASE):],
+                "redirected": final[len(BASE):] != path, "in_sitemap": path in inv,
+                "lastmod": inv.get(path, ""), "updated": (stamp[0][:10] if stamp else ""),
+                "words": len(body.split()), "sections": ex["sections"],
+                "heading": ex["heading"], "items": ex["items"],
+                "items_freq": ex["items_freq"], "items_freq_word": ex["items_freq_word"],
+                "mode": ex["mode"], "dropped": ex["dropped"],
+            })
+        pages[t.code] = recs
+        print(f"  {t.code:14s} " + "  ".join(
+            f"{r['path'].split('/')[-1][:34]}:{r['mode']}/{len(r['items'])}" for r in recs), flush=True)
+    version = max([r["lastmod"] or r["updated"] for rs in pages.values() for r in rs] or [today()])
+    key_dir = raw.archive_dir(SOURCE, version)
+    blobs = {"pages.json": pages, "index.json": inv}
+    sizes = {}
+    for n, b in blobs.items():
+        body_bytes = json.dumps(b, ensure_ascii=False).encode("utf-8")
+        (key_dir / n).write_bytes(body_bytes)
+        sizes[n] = len(body_bytes)
+    _drafts(pages)
+    return PdqPayload(pages, version, key_dir, sizes,
+                      "proxy" if "proxy" in reaches else "direct", http, ms)
+
+
+def probe(offline: bool = False) -> ProbeResult:
+    pl = load_payload(offline)
+    pages, key_dir = pl.pages, pl.key_dir
+    version, sizes = pl.version, pl.sizes
+    reach, http, ms = pl.reach, pl.http, pl.ms
 
     per, covered, weak, sent_mode, redirected, missing = [], 0, [], [], [], []
     all_items = sent_items = freq_items = freq_word_items = 0

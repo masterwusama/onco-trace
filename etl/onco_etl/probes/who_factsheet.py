@@ -36,6 +36,8 @@ from __future__ import annotations
 import json
 import re
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 from lxml import html as LH
 
@@ -155,6 +157,12 @@ def _page(slug: str, lang: str) -> dict:
             "symptom_items": [SYM_TAIL.sub("", x).strip() for x in _list_after(tree, SYM_HEAD)]}
 
 
+def sym_heading(rec: dict) -> str:
+    """`symptom_items` 挂在哪个 h2 之下。归档没存这一列，从同一份记录里已存的 `sections`
+    按同一个正则取——装载器要落 `symptom.heading`，但不该因此重新解析一遍页面。"""
+    return next((h for h in rec.get("sections") or [] if SYM_HEAD.search(h)), "")
+
+
 def _list_after(tree, head_re: re.Pattern) -> list[str]:
     """标题命中 head_re 的那一节里紧跟标题的第一串 `<ul>`（遇到下一个标题就停）。"""
     for h in tree.xpath(ROOT + "//h2"):
@@ -199,8 +207,11 @@ def _json_ld(html_text: str) -> tuple[str, list[str]]:
     return (max(dates) if dates else ""), sorted(set(aspects))
 
 
-def _match_sheets(titles: dict) -> tuple[dict, dict]:
-    """按 targets 声明的查询词把 242 份 sheet 对到 18 病上；通页不参与匹配。"""
+def match_sheets(titles: dict) -> tuple[dict, dict]:
+    """按 targets 声明的查询词把 242 份 sheet 对到 18 病上；通页不参与匹配。
+
+    公开是因为症状装载器要的是同一张"哪份 sheet 算哪个病"的表——它不该自己按 slug 猜。
+    """
     per: dict[str, list[str]] = {}
     for t in TARGETS:
         terms = [s.lower() for s in t.search_terms]
@@ -227,55 +238,77 @@ def _langs(slugs: list[str]) -> tuple[dict, int, list[str]]:
     return out, ms, reaches
 
 
-def probe(offline: bool = False) -> ProbeResult:
-    ms = 0
-    reaches: list[str] = []
-    http: int | None = None
+@dataclass
+class WhoPayload:
+    """一次取数（或离线重放）的产出：sheet slug → [中文版, 英文版] 两份解析记录。"""
+
+    pages: dict[str, list[dict]]
+    titles: dict[str, str]
+    langs: dict[str, dict]
+    version: str
+    key_dir: Path
+    sizes: dict[str, int]
+    reach: str
+    http: int | None
+    ms: int
+
+
+def load_payload(offline: bool) -> WhoPayload:
+    """离线重放 `data/raw` 归档；联网取 A-Z 清单、认领到的 sheet 两语种正文与六语种可得性。"""
     if offline:
         key_dir = raw.newest_dir(SOURCE, "pages.json")
         if not key_dir:
             raise SystemExit(f"离线重放要先有归档：data/raw/{SOURCE}/*/pages.json 不存在")
         pages = json.loads((key_dir / "pages.json").read_text(encoding="utf-8"))
         index = json.loads((key_dir / "index.json").read_text(encoding="utf-8"))
-        titles, langs = index["titles"], index["langs"]
-        per, generic = _match_sheets(titles)
-        reaches = ["offline"]
         sizes = {n: (key_dir / n).stat().st_size for n in ("pages.json", "index.json")}
-        version = key_dir.name
-    else:
-        titles, ms, reach, http = _index()
-        reaches.append(reach)
-        per, generic = _match_sheets(titles)
-        slugs = sorted({s for hits in per.values() for s in hits} | set(generic))
-        pages = {}
-        for slug in slugs:
-            recs = []
-            for lang in ("zh", "en"):
-                t0 = time.perf_counter()
-                recs.append(_page(slug, lang))
-                ms += int((time.perf_counter() - t0) * 1000)
-                time.sleep(SLEEP)
-            pages[slug] = recs
-            zh, en = recs
-            print(f"  {slug:32s} zh {zh['status']}{'→改写' if zh['redirected'] else ''} "
-                  f"要点 {len(zh['key_facts'])} "
-                  f"症状 {len(zh['symptom_items'])} 段 {len(zh['sections'])} aspects {len(zh['aspects'])}"
-                  f" | en 要点 {len(en['key_facts'])} 症状 {len(en['symptom_items'])}", flush=True)
-        langs, m, rs = _langs(slugs)
-        ms += m
-        reaches += rs
-        dates = [p["date_modified"] or p["date"] for recs in pages.values() for p in recs]
-        version = max([d for d in dates if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d or "")] or [today()])
-        key_dir = raw.archive_dir(SOURCE, version)
-        blobs = {"pages.json": pages, "index.json": {"titles": titles, "langs": langs}}
-        sizes = {}
-        for n, b in blobs.items():
-            body_bytes = json.dumps(b, ensure_ascii=False).encode("utf-8")
-            (key_dir / n).write_bytes(body_bytes)
-            sizes[n] = len(body_bytes)
-        _drafts(pages, per)
+        return WhoPayload(pages, index["titles"], index["langs"], key_dir.name,
+                          key_dir, sizes, "offline", None, 0)
 
-    reach = "offline" if "offline" in reaches else ("proxy" if "proxy" in reaches else "direct")
+    ms = 0
+    reaches: list[str] = []
+    titles, m, reach, http = _index()
+    ms += m
+    reaches.append(reach)
+    per, generic = match_sheets(titles)
+    slugs = sorted({s for hits in per.values() for s in hits} | set(generic))
+    pages = {}
+    for slug in slugs:
+        recs = []
+        for lang in ("zh", "en"):
+            t0 = time.perf_counter()
+            recs.append(_page(slug, lang))
+            ms += int((time.perf_counter() - t0) * 1000)
+            time.sleep(SLEEP)
+        pages[slug] = recs
+        zh, en = recs
+        print(f"  {slug:32s} zh {zh['status']}{'→改写' if zh['redirected'] else ''} "
+              f"要点 {len(zh['key_facts'])} "
+              f"症状 {len(zh['symptom_items'])} 段 {len(zh['sections'])} aspects {len(zh['aspects'])}"
+              f" | en 要点 {len(en['key_facts'])} 症状 {len(en['symptom_items'])}", flush=True)
+    langs, m, rs = _langs(slugs)
+    ms += m
+    reaches += rs
+    dates = [p["date_modified"] or p["date"] for recs in pages.values() for p in recs]
+    version = max([d for d in dates if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d or "")] or [today()])
+    key_dir = raw.archive_dir(SOURCE, version)
+    blobs = {"pages.json": pages, "index.json": {"titles": titles, "langs": langs}}
+    sizes = {}
+    for n, b in blobs.items():
+        body_bytes = json.dumps(b, ensure_ascii=False).encode("utf-8")
+        (key_dir / n).write_bytes(body_bytes)
+        sizes[n] = len(body_bytes)
+    _drafts(pages, per)
+    return WhoPayload(pages, titles, langs, version, key_dir, sizes,
+                      "proxy" if "proxy" in reaches else "direct", http, ms)
+
+
+def probe(offline: bool = False) -> ProbeResult:
+    pl = load_payload(offline)
+    pages, titles, langs = pl.pages, pl.titles, pl.langs
+    key_dir, version, sizes = pl.key_dir, pl.version, pl.sizes
+    reach, http, ms = pl.reach, pl.http, pl.ms
+    per, generic = match_sheets(titles)
 
     have, thin, no_zh_sym, no_sheet, rows, claimed = [], [], [], [], 0, set()
     for t in TARGETS:

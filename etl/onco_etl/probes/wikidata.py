@@ -29,7 +29,7 @@ B6 把症状维定在 L2（PDQ 的清单是现成 `<li>`），但 PDQ 只给英�
      宫颈癌/甲状腺癌/肾癌/多发性骨髓瘤 稳定 missingtitle，被误报成"这病没有症状章节"。
 
 裁定（不在本模块执行，写在这里是为了让日志与结论同源）：中文症状名**不做成翻译列**，
-`symptom` 按 `(source_id, disease_code, name, name_lang)` 落，缺就空着。
+`symptom` 按 `(disease_id, source_id, name_lang, name)` 落，缺就空着。
 """
 from __future__ import annotations
 
@@ -71,14 +71,36 @@ WHO_ZH_LIST = ("breast_female", "colorectum", "lung")
 # 路线③的目测（2026-09-08，逐条读完五病解析回来的清单条目）。规则解析只能数 <li>/<dd>，
 # 分不清"症状项"与"挂在同一名目下的分期定义"，所以这一层判定按 nci_pdq_html 的 EYEBALL
 # 同一口径处理：人读过的结论作为声明进代码，不进任何录入界面，探针只按这份声明算达标。
-# 值 = (真症状条数, 为什么不是解析出来的那个数)。
+# 值 = (真症状条数, 为什么不是解析出来的那个数)。两个声明由 `wiki_drops()` 对上：
+# 解析条数 − 剔除条数必须等于这里写的真症状条数，源改版对不上就中止。
 WIKI_EYEBALL: dict[str, tuple[int, str]] = {
     "colorectum": (4, "解析 17 条里 13 条是 0–IV 期与 A–D 期/B1–C2 的分期定义，症状只有前 4 条"),
     "leukemia": (10, "解析 15 条里 5 条是白血病亚型描述（慢性骨髓性／慢性淋巴性…），不是症状"),
     "myeloma": (8, "解析 19 条是 10 个名目 + 9 段释义（dl/dt/dd 交替），且章节名为「症狀及併發症」，"
                    "高血鈣症與腎功能減退属并发症"),
     "uterus": (9, "9 条全是症状，五病里最干净的一份"),
-    "pancreas": (5, "解析 7 条里 糖尿病／遊走性血栓靜脈炎／重性抑郁障碍 是共病与体征，不算症状项"),
+    "pancreas": (4, "解析 7 条里 糖尿病／遊走性血栓靜脈炎／重性抑郁障碍 是共病与体征，不算症状项"),
+}
+
+# 逐条剔除的落点：病 → ((不是症状的理由, 解析序号), …)。序号按 `_wiki_items` 的文档顺序，
+# 与 `WIKI_EYEBALL` 那份目测是同一次逐条读出来的，一份说"留几条"、一份说"剔哪几条"。
+# 没列进来的病等于全留（uterus 那 9 条全是症状）。装载器把剔除行照样写进 `symptom`
+# 只把 `review_status` 置 rejected——源确实给了这一条，库里该留着"我们看过并判它不是症状"这件事。
+WIKI_DROP: dict[str, tuple[tuple[str, tuple[int, ...]], ...]] = {
+    "colorectum": (
+        ("0–IV 期与 Dukes A–D／B1–C2 的分期定义", tuple(range(5, 18))),
+    ),
+    "leukemia": (
+        ("各白血病亚型（急性前骨髓性／慢性骨髓性／慢性淋巴性／急性淋巴性／成人 T 细胞）的描述行，"
+         "不是症状", tuple(range(11, 16))),
+    ),
+    "myeloma": (
+        ("高血鈣症与腎功能減退是并发症——这一节的标题本身就叫「症狀及併發症」", (1, 3)),
+        ("名目之下那一段释义，与上一条名目讲的是同一件事（dl/dt 交替）", (2, 4, 6, 8, 10, 12, 14, 16, 18)),
+    ),
+    "pancreas": (
+        ("共病与体征：糖尿病／遊走性血栓靜脈炎／重性抑郁障碍", (5, 6, 7)),
+    ),
 }
 
 # 逐条查路线的样本：36 个"最顺利情况"的短词（PDQ 里真实出现过的症状说法）
@@ -417,6 +439,56 @@ def _wiki_route(canon: dict[str, str]) -> dict[str, dict]:
     return out
 
 
+def wiki_url(title: str) -> str:
+    """条目直链，给 `symptom.source_url`。用的是 `_wiki_titles()` 解析过的规范标题，不是声明里的简体写法。"""
+    return "https://zh.wikipedia.org/wiki/" + urllib.parse.quote(title.replace(" ", "_"))
+
+
+def wiki_drops(code: str, n_items: int) -> dict[int, str]:
+    """这一病的清单里哪几条不是症状：解析序号 → 理由。
+
+    两处对不上都中止，不猜。序号越界或"解析条数 − 剔除条数"≠`WIKI_EYEBALL` 声明的真症状条数，
+    说明条目换了形状，那次逐条目测已经不再成立——按老序号继续剔就会把新加进来的真症状判成
+    非症状，而症状维错一条没人看得出来。宁可停下来让人重读。
+    """
+    drop = {i: why for why, ids in WIKI_DROP.get(code, ()) for i in ids}
+    if code not in WIKI_EYEBALL:
+        raise SystemExit(f"维基 {code} 解析出 {n_items} 条，但 WIKI_EYEBALL 里没有这一病的目测："
+                         "先逐条读过再记声明，装载器不替人判症状")
+    bad = sorted(i for i in drop if not 1 <= i <= n_items)
+    if bad:
+        raise SystemExit(f"维基 {code}：WIKI_DROP 的序号 {bad} 超出解析出的 {n_items} 条")
+    kept = n_items - len(drop)
+    want = WIKI_EYEBALL[code][0]
+    if kept != want:
+        raise SystemExit(
+            f"维基 {code} 清单漂移：解析 {n_items} 条 − 剔除 {len(drop)} 条 = {kept} 条，"
+            f"与 WIKI_EYEBALL 声明的 {want} 条不符——条目改版了，逐条目测要重做")
+    return drop
+
+
+def load_wiki_list(offline: bool) -> dict[str, dict]:
+    """路线③单独一趟：在线就重取重归档，离线就重放最近一份 `wiki.json`。
+
+    症状装载器只要这一份解析，词典路线①②（一次 SPARQL 加 36 个短词逐条查）它用不上，
+    所以这里不跑那两条——也因此这一支给的是裸 dict 而不是别的探针那种 payload 数据类：
+    路线③没有上游版本戳可带，本探针刻意不登记 `dataset_release`。
+    探针自己不走这里：它三支路线共用一次 `_TRACE` 与同一个归档目录，拆开跑会把①②的
+    可达性证据算丢。
+    """
+    if offline:
+        f = raw.newest(SOURCE, "wiki.json")
+        if not f:
+            raise SystemExit(
+                f"离线重放要先有归档：data/raw/{SOURCE}/*/wiki.json 不存在，"
+                f"先跑 `probe --code {SOURCE}`")
+        return json.loads(f.read_text(encoding="utf-8"))
+    wiki = _wiki_route(_wiki_titles())
+    key_dir = raw.archive_dir(SOURCE, f"zh-wiki-{today()}")
+    (key_dir / "wiki.json").write_text(json.dumps(wiki, ensure_ascii=False), encoding="utf-8")
+    return wiki
+
+
 def _match(lex: list[tuple[str, str]], items: list[tuple[str, str]]) -> list[tuple[str, str, str]]:
     """词典去贴 PDQ 原文：一条命中的中文按字典序取第一个（目测那趟同一规则）。
 
@@ -530,10 +602,10 @@ def probe(offline: bool = False) -> ProbeResult:
         f"{len(wiki_none)} 病连章节都没有（{', '.join(wiki_none) or '无'}）。"
         f"④ 并集才等于「有现成中文症状清单的病」：WHO 中文版 {len(WHO_ZH_LIST)} 病"
         f"（{', '.join(WHO_ZH_LIST)}，禁商用）∪ 维基 {len(wiki_ok)} 病 = {len(zh_list)}/18。"
-        "裁定：不做翻译列。symptom 按 (source_id, disease_code, name, name_lang) 落，"
-        "PDQ 行 name_lang='en'、WHO 中文版行 'zh'，缺就空——它们是两份不同来源的观察，"
+        "裁定：不做翻译列。symptom 按 (disease_id, source_id, name_lang, name) 落，"
+        "PDQ 行 name_lang='en'、WHO 中文版与维基条目行 'zh'，缺就空——它们是两份不同来源的观察，"
         "压成同一行的 name + name_zh 会假装是同一份。"
-        "口径三处：本探针的分母是 PDQ 归档的症状条目（不自己重下 PDQ，所以跑它之前要先有"
+        "口径三处：本探针的分母是 PDQ 归档的症状条目（不自己重下 PDQ，所以跑它之前要先有 "
         "nci_pdq_html 的归档）；titles 解析必须把 normalized/converted/redirects 三种边都走一遍"
         "再喂 action=parse（它不认 converttitles），只按字面标题匹配会让 宫颈癌/甲状腺癌/肾癌/"
         "多发性骨髓瘤 稳定 missingtitle、被记成「没有症状章节」；这一支没有上游版本戳，"

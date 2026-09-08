@@ -14,8 +14,8 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"。矩阵本身�
 | 身份与 ID 主干 | **进** | `mondo` `ok` 18/18（63,278 term，主条目 18/18 解析） | 枢纽声明是 NCIt，但**不抓 NCIt 全量**（237 MiB）：跨源 ID 一律取 MONDO 主条目的 xref 列，实测 NCIT xref 18/18、ICD-9 另带出 145 个亚部位 term 供下钻。MONDO 自带的 MESH 只 7/18、EFO 5/18、UMLS 17/18，不能当主干 |
 | 器官 / 关联器官 | **进** | `icdo3_seer` `ok` 18/18 | 82 site recode / 332 拓扑码 / 806 形态学码一份文件同时供 anatomy 与 histology；亚部位用 MONDO 的 ICD-9 亚部位 term，不用 NCIt 定位轴 |
 | 组织学 | **进**（自建） | 同上（806 个形态学码是全局码表，无逐病格） | 18 病的组织学分类按 ICD-O-3 形态学段自己展开，矩阵里这一维没有逐病证据列，别把它当成"已实测覆盖" |
-| 症状清单 | **进** | `nci_pdq_html` `ok` 18/18（209 条，5 病目测 72/72，precision 100%） | L2 规则解析，非 NER；`source_id` 必须随行落库 |
-| 症状中文名 | **部分进** | `wikidata` `partial` 7/18（PDQ 英文 18/18 + 中文 7/18：中文维基 5 病 ∪ WHO 中文版 3 病） | 按源分行 `(source_id, disease_code, name, name_lang)`，**不做翻译列**。11 病没有中文清单，页面按病显示"暂无可靠中文来源"而不是留白 |
+| 症状清单 | **进** | `nci_pdq_html` `ok` 18/18（209 条，5 病目测 72/72，precision 100%） | L2 规则解析，非 NER；`source_id` 必须随行落库。探针的 209 条落库时按 `(disease_id, name_lang, name)` 归一成 185 行（24 条是同一症状在多个组织学档各写一遍），另有 4 条从散文句抠出的不进——句子不是症状项 |
+| 症状中文名 | **部分进** | `wikidata` `partial` 7/18（PDQ 英文 18/18 + 中文 7/18：中文维基 5 病 ∪ WHO 中文版 3 病） | 按源分行 `(disease_id, source_id, name_lang, name)`，**不做翻译列**。11 病没有中文清单，页面按病显示"暂无可靠中文来源"而不是留白 |
 | 叙述 / 介绍段 | **不进** | `who_factsheet` `partial` 4/18，判据线 ≥12/18 | 全站 fact sheet 只有 73 个主题、癌种专页 18 病里 4 病有 ≥3 条要点清单。 disease 页不给叙述段落，或只给一句由症状/统计维拼出来的中性导语 |
 | 危险因素清单 | **部分进** | GWAS Catalog `partial` 18/18（按 `targets.GWAS_URI` 声明档；只认主条目是 14/18） | 只作为 `role='genetic'` 一层（位点 + OR/β + 95% CI），它是遗传易感性不是可干预暴露 |
 | 危险因素归因强度（PAF） | **不进** | `gbd_cra` `blocked` 0/18、`gbd_results` `blocked` 0/18 | 两个 IHME 面的效应量都在授权门后（vizhub 数据面四个路由全 401）。`paf` 列建而不填，UI 不画数值榜，标"需 IHME 授权" |
