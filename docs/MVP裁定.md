@@ -152,8 +152,8 @@ assoc 17,064 / lit 724,160 / drugs 1,036）。代价如实记在 `targets.py`：
 | 维度 | 表 | 裁定里那句口径落在哪一列 |
 |---|---|---|
 | 身份与 ID 主干 | `disease` | 一行一病，是 `targets.py` 的库内镜像加 MONDO 实测解析结果；`ncit_id` 是跨源枢纽，`xrefs json` 装稀疏码 |
-| 关联器官 | `anatomy_node` + `disease_anatomy` | `anatomy_node.kind` 分 site_recode 与亚部位 term，`disease_anatomy.role` 分 primary 与 subsite，`basis` 记挂载依据（ICD-O-3 相交 / MONDO 的 ICD-9 xref） |
-| 组织学 | `histology_code` + `disease_histology` | `basis='via_site_recode'`——这个映射是自己从交叉表推出来的，不是源说过 |
+| 关联器官 | `anatomy_node` + `disease_anatomy` | `anatomy_node.kind` 分 site_recode 与亚部位 term，`disease_anatomy.role` 分 primary 与 subsite，`basis` 记挂载依据（ICD-O-3 相交 / MONDO 的 ICD-9 xref）。亚部位只收 ICD-9 为它单开了部位档的 term（带小数点、末位非 .8/.9、且这一档没被同病别的 term 共用）——145 个候选留 51 个，血病三台整维跳过（ICD-9 200–208 章编的是细胞类型不是部位）；实测 82 节点 + 51 节点，逐病 primary 1–5 条 |
+| 组织学 | `histology_code` + `disease_histology` | `basis='via_site_recode'`——这个映射是自己从交叉表推出来的，不是源说过。只收行为码 /3（803 个码里 657 个），逐病展开 129–212 条 |
 | 症状清单 + 中文名 | `symptom` | 按源分行，`name_lang` 分 en/zh；`source_id`、`source_url`、`anchor` 随行，可点回原文 |
 | 危险因素（遗传那一层） | `risk_factor` + `disease_risk_factor` | `role` 分 genetic/exposure，`uri_tier` 分主条目与声明档，`p_value_text` 与 `pvalue_mlog` 两列分开存 |
 | 发病量 / 年龄组 / 趋势 | `stat_fact`（长表） | `estimate_basis` 就是"两列分开存、不可相减成趋势"那一句的落点 |

@@ -15,8 +15,8 @@ from ..probes import mondo
 from ..targets import GWAS_URI, OT_NODE, TARGETS
 from .base import Ctx, LoadResult, prov, upsert
 
-SOURCE = "mondo"
-DATASET = "mondo.obo"
+SOURCE = mondo.SOURCE
+DATASET = mondo.DATASET
 # 18 个主条目是逐病人工比对语义范围后声明的（选取原则写在 targets.py 的 mondo_id 注释），
 # 不是抽查——这一行的"人看过没有"答案是看过，且看的就是这一行
 REVIEW = "confirmed"

@@ -18,8 +18,10 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"，两个产出�
 同内容）。每张表的每一列都对着 `source_probe_log` 里的 `fields_seen` 与 `sample` 来——
 探针没量到的字段不建列，源给出口径差别的地方拆成列存而不是混成一列。
 装载器已开工：`etl/onco_etl/load/` 是底座（拿版本号、幂等写行、出处五列），
-第一个装载器把疾病主档装进了 `disease`（18 行，`ncit_id` 18/18 非空）。
-其余按维度分批推进——器官树与组织学 → 统计与生存率 → 症状 → 危险因素 → 研究层，
+疾病主档、器官树与组织学三批已落库——`disease` 18 行（`ncit_id` 18/18 非空）、
+`anatomy_node` 133 个节点（82 个 SEER site recode + 51 个 MONDO 亚部位 term）、
+`histology_code` 657 个恶性形态学码，逐病挂载 85 条器官关系与 3,111 条组织学关系。
+其余按维度分批推进——统计与生存率 → 症状 → 危险因素 → 研究层，
 后端与前端接在这之后。
 P0 只剩一件收尾的事：IHME 的免费非商用账号已注册、凭据已填进 `.env`，但数值入口的登录是
 Azure AD B2C 换 token（scope `…/data-api/data.read`，界面前还有一层 Cloudflare），这条取数路还没实现。
@@ -145,7 +147,9 @@ python db/tests/run.py status            # 表行数 + 三道门禁（源授权 
 python etl/tests/run.py                  # 解析回归，用仓库内的上游页面，不联网
 ops\etl.ps1 load --list                  # 有哪些装载器
 ops\etl.ps1 load --code disease --offline # 把疾病主档从声明 + MONDO 归档装进 disease
-ops\etl.ps1 load --code disease --dry-run # 整批写进去再回滚，只验约束不留下数据
+ops\etl.ps1 load --code anatomy --offline # 器官树与组织学：SEER 交叉表 + MONDO 亚部位 → 四张表
+ops\etl.ps1 load --offline               # 全部装载器按注册顺序跑一遍
+ops\etl.ps1 load --code anatomy --dry-run # 整批写进去再回滚，只验约束不留下数据
 ops\etl.ps1 probe-reach --code mondo     # 只探指定源的可达性
 ops\etl.ps1 probe --list                 # 有哪些专项探针
 ops\etl.ps1 probe --code mondo --offline # 用 data/raw 归档离线重放，不重新下载

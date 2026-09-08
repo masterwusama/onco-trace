@@ -26,6 +26,8 @@ for _s in (sys.stdout, sys.stderr):
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "etl"))
 
+from onco_etl.load import anatomy  # noqa: E402
+from onco_etl.probes import mondo  # noqa: E402
 from onco_etl.probes import seer_statfacts as seer  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -108,7 +110,43 @@ def check_seer(c: Checks) -> None:
     c.eq("seer prost 当作女性病核对", seer.sex_verdict("cervix", pages["prost"]), "conflict")
 
 
-CHECKS = (("seer_statfacts", check_seer),)
+def check_subsites(c: Checks) -> None:
+    """亚部位挑选规则。MONDO 的 ICD-9 xref 混着部位与细胞类型，这条规则决定器官树里
+    会不会冒出 'small cell lung carcinoma' 这种组织学亚型——所以逐条锁住。"""
+    lung = next(t for t in anatomy.TARGETS if t.code == "lung")
+    pre = sorted(anatomy.expand_icd9(lung.icd9))
+    # 声明里的四位前缀写成 ICD-9 的带点档位：1622 → 162.2
+    def dot(p: str) -> str:
+        return f"{p[:3]}.{p[3]}"
+
+    free = [dot(p) for p in pre if p[3] not in anatomy.RESIDUAL_LAST]
+    residual = [dot(p) for p in pre if p[3] in anatomy.RESIDUAL_LAST]
+    assert len(free) >= 4 and len(residual) >= 2, "肺的 ICD-9 声明不够覆盖这条规则的各分支"
+
+    def term(mid: str, codes: tuple[str, ...]) -> mondo.MondoTerm:
+        return mondo.MondoTerm(id=mid, name=f"t{mid}", icd9=codes)
+
+    scanned = mondo.MondoScan(
+        subsites={
+            "lung": [
+                term("A", (free[0],)),  # 单开了一档 → 收
+                term("B", (residual[0],)),  # .8/.9 是"其他/未特指" → 不收
+                term("C", (free[1],)),  # C 与 D 抢同一档，说明那码标的是器官本身
+                term("D", (free[1],)),  # 而不是亚部位，分不出谁对就都不收
+                term("E", (residual[1], free[2], free[3])),  # 兜底档不牵连；多档取字典序最小
+                term("F", (f"{free[0][:3]}{free[0][3]}",)),  # 没写成带点档位 → 不收
+            ],
+            "leukemia": [term("H", ("204.1",))],  # 合格也不收：200–208 章编的是细胞类型
+        }
+    )
+    got = anatomy.pick_subsites(scanned)
+    c.eq("subsite 肺的产出", [(t.id, slot) for t, slot in got["lung"]],
+         [("A", free[0]), ("E", free[2])])
+    c.eq("subsite 血病整维跳过", got["leukemia"], [])
+    c.eq("subsite 其余病为空", sum(len(v) for k, v in got.items() if k not in ("lung", "leukemia")), 0)
+
+
+CHECKS = (("seer_statfacts", check_seer), ("anatomy_subsites", check_subsites))
 
 
 def main() -> int:
