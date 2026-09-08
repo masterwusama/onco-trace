@@ -9,6 +9,13 @@
    HPO/Orphanet/NCIt 的文档都声称有疾病↔症状注释，实测常见上皮癌拿不到可用行。
 
 `evidence` 字段记的是设计阶段已经手工验过的事实，探针跑完要能对上或推翻它。
+
+`status` 从 B7c 起不再留 candidate，三个态各自的判据：
+  · `active`——有内容级探针（不是只探可达性的 reach 行）实测过，且 MVP 建表用得上。
+  · `paused`——两种情形合用一个态：等人工注册账号才能补测的（IHME 那两维）、
+    以及只做过 reach 没做过内容级实测的备选码表。两者都不是"源坏了"，所以不写 rejected。
+  · `rejected`——内容级探针判空，且这一维换源也补不上（WHO GHO 的死因×年龄组）。
+逐源理由与"哪几维进 MVP"记在 docs/MVP裁定.md，这里不重复一遍，免得两处说法各自漂移。
 """
 from __future__ import annotations
 
@@ -52,6 +59,7 @@ SOURCES: tuple[Source, ...] = (
         "下载要走代理时重试逻辑在 fetch.py 里",
         fetch_mode="quarterly",
         reliability="high",
+        status="active",
         evidence="探针实测（releases/2026-09-01，.obo 53134854 字节 / 63278 个 term）："
         "mondo.json 107586061 字节也可达，mondo-base.json 已 404；取 .obo——体量减半且能逐行"
         "流式解析。原判据「用 ICD-10 xref 找 18 病的主条目」被推翻：MONDO 没有裸 ICD10: 前缀"
@@ -76,6 +84,7 @@ SOURCES: tuple[Source, ...] = (
         legal_note="美国政府作品可自由使用，要求引用 SEER；ICD-O 本体 WHO 版权，统计用途允许",
         fetch_mode="annual",
         reliability="high",
+        status="active",
         evidence="探针实测（d20220429 版，xlsx 451875 字节 / 12496 行）：82 个 site recode"
         "（器官级，如 C160-C166,C168-C169 = STOMACH、C340-C343,C348-C349 = LUNG & BRONCHUS）"
         "展开出 332 个拓扑码，去重后 806 个 histology/behavior 码，一个文件同时覆盖 anatomy 与 "
@@ -98,6 +107,7 @@ SOURCES: tuple[Source, ...] = (
         ".xls 老格式需 xlrd；同页另有 Histology3_vNN 年度更新表，属独立 dataset_code",
         fetch_mode="annual",
         reliability="high",
+        status="paused",
         evidence="探针实测：464896 字节，单 sheet 'ICD-O-3.2 Morphology'，列为 "
         "ICDO3.2/Level/Term/Code reference/obs/See also/See note/Includes/Excludes/Other text，"
         "术语分 Preferred 与 Synonym 两级，比 SEER 的扁平描述细；不含 Topography 表",
@@ -115,6 +125,7 @@ SOURCES: tuple[Source, ...] = (
         "URL 里的 2026 需要跟着换，不能写死在调度里",
         fetch_mode="annual",
         reliability="high",
+        status="paused",
         evidence="B2 实测加进来的源，起因是 MONDO 只能给 7/18 个主条目提供 MESH xref，"
         "而 B5 的 Europe PMC 检索要靠 MeSH 主题词才有查准率。探针实测该 URL 直连 200、"
         "text/xml、312952703 字节（约 298 MiB）；同源另两个路径 "
@@ -135,6 +146,7 @@ SOURCES: tuple[Source, ...] = (
         "再发布前要按 NCIt 的版权页逐项确认，不能整库当成单一许可",
         fetch_mode="quarterly",
         reliability="high",
+        status="paused",
         evidence="B2 实测加进来的源：MONDO 的 18 个主条目 xref 里 NCIT 是唯一 18/18 齐备的"
         "（UMLS 17/18、MESH 7/18、EFO 5/18），所以跨源枢纽应该落在 NCIt 而不是 MONDO 上，"
         "NCIt 自带 MeSH/ICD-O-3/ICD-10/EFO 交叉引用，一次能补齐三个缺口。"
@@ -161,6 +173,7 @@ SOURCES: tuple[Source, ...] = (
         legal_note="orphadata 明示 CC BY 4.0，需署名 Orphanet；文件约 45 MiB",
         fetch_mode="quarterly",
         reliability="high",
+        status="paused",
         evidence="2026-07 版实测：4357 病 / 116664 行，每行都带六档频率带（Very frequent 99-80% / Frequent 79-30% / "
         "Occasional 29-5% / Very rare <4-1% / Obligate / Excluded）可直接映射 freq_band；"
         "但肺/结直肠/前列腺/胃/宫颈/成人肝 0 命中，血液肿瘤可用（CML 11 条、滤泡淋巴瘤 17 条）",
@@ -177,6 +190,7 @@ SOURCES: tuple[Source, ...] = (
         legal_note="OBO 发布，许可条款以文件头 #license 行为准，入库前抄录到 source.license；purl 会 302 到 GitHub release asset",
         fetch_mode="monthly",
         reliability="medium",
+        status="paused",
         evidence="v2026-09-02 实测：35.8 MB / 252467 行 / 11598 病，第一列零个 MONDO ID；"
         "常见癌 3~9 行且是肿瘤同义复述（HP:0003002 Breast carcinoma），Frequency 全空；肺癌/胰腺癌/AML 作为条目 0 行",
     ),
@@ -192,6 +206,7 @@ SOURCES: tuple[Source, ...] = (
         legal_note="2015 BioLark 文本挖掘产物，已被 HPO 主线弃用；只可当症状词表候选，不可当频率来源",
         fetch_mode="once",
         reliability="low",
+        status="paused",
         evidence="实测 6.7 MB / 3647 文件：原发性肝癌 111 行、结直肠 111、食管 81、胰腺 55，"
         "但 16495 条癌症行 Frequency 全空，58 个癌文件只有 1 行 HP:0002664 Neoplasm",
     ),
@@ -208,6 +223,7 @@ SOURCES: tuple[Source, ...] = (
         "（sitemap 是唯一的 XML，只给 loc 与 lastmod，不给正文）",
         fetch_mode="monthly",
         reliability="high",
+        status="active",
         evidence="探针实测（2026-09-08；sitemap 6,480 个 loc / 831 个含 pdq / 791 个在 /types/ 下，"
         "18 病按 targets.py 的 pdq_pages 认领 30 页）：症状维过判据——18/18 病从症状小节规则化取回"
         "≥4 条症状项，合计 209 条清单条目，5 病目测 precision 100%（判据线 ≥80%）。"
@@ -237,6 +253,7 @@ SOURCES: tuple[Source, ...] = (
         legal_note="美国政府公开数据，需署名 SEER；HTML 表结构改版频繁，解析器必须留 fixture 回归",
         fetch_mode="annual",
         reliability="high",
+        status="active",
         evidence="B3 实测（18 页全部 200，Last-Modified 2026-04-22，合计约 1.5 MB）："
         "SEER 自己把可抓的表标成 class=scrapeTable、id=scrapeTable_NN，但 NN 与页面出现顺序"
         "不一致（lungb 实测 _01 _02 _04 _05 _03 _07 _08 _06），只能按文档顺序用最近的 <strong> "
@@ -284,6 +301,7 @@ SOURCES: tuple[Source, ...] = (
                    "注册的是免费非商用账号，走通之前这一维不能算通",
         fetch_mode="annual",
         reliability="high",
+        status="paused",
         evidence="B3 实测（2026-09-07）：设计口径全中，数值入口全关。"
                  "词表层 18/18 病都有对应病因档（另带 13 个 L4 亚档，肝癌按肝炎/酒精/NASH 分因）、"
                  "中国=location_id 6、年度 1990–2021、性别 Male/Female/Both、"
@@ -317,6 +335,7 @@ SOURCES: tuple[Source, ...] = (
                    "SEER/GCO 是观测或估算的例数，不同表可以并排显示但不能相减",
         fetch_mode="annual",
         reliability="high",
+        status="paused",
         evidence="B4 实测（2026-09-07）：效应量 0/18，关联骨架 10/18。"
                  "vizhub GBD Compare 的匿名面只有 GET /api/config（200，只有 "
                  "releaseText=GBD 2023 / gbdYear=2023 / copyYear=2025 这类版本字段），"
@@ -351,6 +370,7 @@ SOURCES: tuple[Source, ...] = (
         "但引用必须带版本与估算方法码（本版中国 incidence=2b）",
         fetch_mode="annual",
         reliability="high",
+        status="active",
         evidence="B3 实测：真实入口是 gco-api.iarc.fr 的 JSON，匿名直连、无 token 无登录门。"
         "路径里的版本号 2024 不是常量，写在前端 bundle 的 data_version 里，探针从那里读。"
         "中国 country=156（按 iso3=CHN 认，别硬写数字）；一次 factsheet 请求回 279 行 = "
@@ -377,6 +397,7 @@ SOURCES: tuple[Source, ...] = (
         "inc_cov / inc_period / inc_source 三个口径字段，中国是抽样登记格外推",
         fetch_mode="annual",
         reliability="high",
+        status="active",
         evidence="B3 实测：与 Cancer Today 同门户但是另一个数据库、另一套癌种码"
         "（肺 11、结直肠 106、NHL 26=「C82-86,C96」、骨髓瘤 27=「C88+C90」——"
         "同一个 C88 在 Today 归 NHL、在这里归骨髓瘤，所以两列码分开声明在 targets.py）。"
@@ -407,6 +428,7 @@ SOURCES: tuple[Source, ...] = (
         "且 GHE 是模型估计而非登记处观测，不与 SEER/GCO 的观测数并表",
         fetch_mode="annual",
         reliability="medium",
+        status="rejected",
         evidence="B3 实测（这一维原本指望它补中国死亡年龄组）：计划里写的 Athena API"
         "（apps.who.int/gho/athena/api/…）已整条 302 到 www.who.int/data/gho/legacy，"
         "后继是 ghoapi.azureedge.net/api 的 OData，匿名无 key、每个指标一个实体集，"
@@ -442,6 +464,7 @@ SOURCES: tuple[Source, ...] = (
         "取前缀会把填充率系统性量偏",
         fetch_mode="monthly",
         reliability="high",
+        status="active",
         evidence="探针实测：旧入口 /gwas/api/search/downloads/full 已 404 下线。真实入口是 EBI FTP 的 "
         "releases/<年>/<月>/ 日历目录（实测 2026-09，这份包 2026-09-04 发布），latest/ 只是它的镜像，"
         "所以 upstream_version 从日历目录读、不拼死。ontology-annotated 版整包 73,489,749 B，"
@@ -479,6 +502,7 @@ SOURCES: tuple[Source, ...] = (
         rate_note="分页 pageToken，避免并发",
         fetch_mode="weekly",
         reliability="high",
+        status="active",
         evidence="B5 实测（2026-09-08，单趟 149 s / 249 个请求）：18/18 病都有 ≥1 项在招试验。"
         "按主查询（第一项 MeSH 主题词裸写 OR 同义词加引号）命中 110,954 项，其中在招 23,660、"
         "未招募但仍在随访 7,449、已完成 46,704。同口径逐病比有两个方向的增益：主题词裸写比整串"
@@ -514,6 +538,7 @@ SOURCES: tuple[Source, ...] = (
         rate_note="官方建议低并发，批量走 OA 子集的 FTP 而不是逐篇取",
         fetch_mode="monthly",
         reliability="high",
+        status="active",
         evidence="B5 实测（2026-09-08，单趟 181 s）：18/18。近 5 年命中 765,891 篇、全库 2,357,107 篇；"
         "全文可得率是两个数，不是一句「可得率多少」——facet 口径 OPEN_ACCESS 50.8%、IN_EPMC 56.5%，"
         "而同一批查询的记录级抽样 900 条只有 31.7% isOpenAccess。差额是抽样构成造成的：抽到的源里 "
@@ -544,6 +569,7 @@ SOURCES: tuple[Source, ...] = (
                    "与本行\"继承上游\"的说法不一致——署名口径以哪个为准要人定，探针不替它改",
         fetch_mode="quarterly",
         reliability="high",
+        status="active",
         evidence="B5 实测（2026-09-08，单趟 85 s）：18/18 达标（判据＝关联靶点 ≥10）。"
         "点查层是 `POST api.platform.opentargets.org/api/v4/graphql`，匿名、收 MONDO 号"
         "（`efoId:\"MONDO_0008903\"`，冒号换下划线），一次别名批量问完 18 病的关联数/文献量/"
@@ -576,6 +602,7 @@ SOURCES: tuple[Source, ...] = (
         "WHO 只剩\"中文症状名与概述底稿\"这一项用途，是否值得为它放弃商用空间交 B7 裁",
         fetch_mode="annual",
         reliability="high",
+        status="active",
         evidence="探针实测（2026-09-08；A-Z 列表页一次请求回 242 份 sheet 的 slug 与标题，"
         "按 targets 词认领到 6 份并逐份取中英两版 + 试六语种，77 s）："
         "**不达判据**——判据线是 ≥12/18 病有癌种专页，实测 4/18"
@@ -610,6 +637,7 @@ SOURCES: tuple[Source, ...] = (
         legal_note="Wikidata CC0 可自由使用；维基百科正文 CC BY-SA 需署名且同条款共享，转载要保留出处链接",
         fetch_mode="monthly",
         reliability="low",
+        status="active",
         evidence="探针实测（zh-label-symptom，2026-09-08，partial 7/18）："
         "① 直连 Wikimedia 全线读超时，每一发都要落代理（代理侧约 1 s/请求，一趟 70 发上下约 15 分钟），"
         "且一整趟里会撞上一到两次 CONNECT 抖动——_json 已按 3 次退避重试，"

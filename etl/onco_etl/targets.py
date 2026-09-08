@@ -143,6 +143,23 @@ TARGETS: tuple[Target, ...] = (
 
 BY_CODE = {t.code: t for t in TARGETS}
 
+# Open Targets 关联维的节点覆盖：只有列在这里的病改用宽节点查，其余按 `mondo_id`。
+# 这是一份源级例外，不动 `mondo_id` 本身：mondo 与 gwas_catalog 两支探针要的是与 icd10
+# 语义对齐的主条目，改了那一列会同时改坏它们的口径。
+# B7c 只换乳腺癌，因为窄档在本维确实塌了：MONDO:0004379（female breast carcinoma）
+# 88 篇文献 / 0 个在研药，而 MONDO:0007254（breast cancer）724,160 篇 / 1,036 个——
+# "研究热度"用窄档显示等于显示 0。代价如实记在这里：这一档不分性别，
+# 而 `sex=female` 的约束仍由 icd10/SEER/GCO 那几列保证，不靠这一列。
+# 胰腺不换是同一批实测里反过来的一例：MONDO:0009831 自己 10,528 靶点 / 463 个在研药，
+# 它的父节点 pancreatic neoplasm 是 10,964 / 30——父节点把量摊薄了，换过去研究层反而更空，
+# 而它的文献少（382 篇）由 EPMC 那一列补，不靠换节点。
+# 两者都不是"父节点总是更大"：关联与文献在 MONDO 层级上不单调。
+OT_NODE: dict[str, str] = {"breast_female": "MONDO:0007254"}
+
+
+def ot_node(t: Target) -> str:
+    return OT_NODE.get(t.code, t.mondo_id)
+
 
 def codes() -> list[str]:
     return [t.code for t in TARGETS]

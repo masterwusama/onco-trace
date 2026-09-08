@@ -17,8 +17,9 @@
 （female breast carcinoma、malignant pancreatic neoplasm），而 OT 的关联与文献挂在更宽的
 父节点上——同一份声明在两个节点上差三个量级（female breast carcinoma 88 篇文献 /
 643 个关联靶点，它的父节点 breast carcinoma 710,750 篇 / 17,963 个靶点）。
-所以父节点的数字一起取回来，报给 B7 裁：这一维是按声明节点显示"窄口径"，
-还是换 EFO 宽档重新声明。不许探针自己按名字猜一个宽档混进去。
+父节点的数字仍然一并取回用来对账，但换不换档不再悬着：B7c 已裁成一份声明式覆盖
+`targets.OT_NODE`，探针只按它查（目前 18 病里只有乳腺癌换宽节点），
+不许探针自己按名字猜一个宽档混进去。
 
 表型数顺带量了（lung 5、colorectum 8、liver/breast/prostate 0）：这条对 B6 的症状维是
 负面证据，写在这里是为了 B6 不必再打一次同样的查询。
@@ -31,7 +32,7 @@ import time
 
 from .. import raw
 from ..fetch import fetch
-from ..targets import TARGETS
+from ..targets import TARGETS, codes, ot_node
 from .result import ProbeResult
 
 SOURCE = "opentargets"
@@ -108,6 +109,11 @@ def _efo(mondo_id: str) -> str:
     return mondo_id.replace(":", "_")
 
 
+def _node(t) -> str:
+    """这一病在 OT 上要查的那个节点：targets.OT_NODE 覆盖过的用宽档，否则用 mondo_id。"""
+    return _efo(ot_node(t))
+
+
 def probe(offline: bool = False) -> ProbeResult:
     ms = 0
     http: int | None = None
@@ -140,6 +146,8 @@ def probe(offline: bool = False) -> ProbeResult:
                "license": raw_manifest.get("license"),
                "citeAs": (str(raw_manifest.get("citeAs") or "")[:120] or None),
                "recordSets": len(raw_manifest.get("recordSet") or []),
+               "distN": len(dist),
+               "distWithLicense": len([o for o in dist if o.get("license") or o.get("licenses")]),
                "roots": [o.get("contentUrl") for o in dist if o.get("contentUrl")],
                "fileSets": len([o for o in dist if not o.get("contentUrl")]),
                # FileSet 只有 includes（`<dataset>/*.parquet`），目录名从这里解出来跟 FTP 对账
@@ -164,7 +172,7 @@ def probe(offline: bool = False) -> ProbeResult:
         sel = ("{id name description dbXRefs associatedTargets{count} literatureOcurrences{count}"
                " phenotypes{count} drugAndClinicalCandidates{count}}")
         data, m, reach = _gql("{" + " ".join(
-            'd%s:disease(efoId:"%s")%s' % (t.code, _efo(t.mondo_id), sel) for t in TARGETS) + "}")
+            'd%s:disease(efoId:"%s")%s' % (t.code, _node(t), sel) for t in TARGETS) + "}")
         ms += m
         reaches.append(reach)
         # parents 与 counts 不能并成一趟：实测 18 病一次问 parents 回 408 Request Timeout，
@@ -175,22 +183,33 @@ def probe(offline: bool = False) -> ProbeResult:
         for i in range(0, len(TARGETS), 6):
             chunk = TARGETS[i:i + 6]
             d, m, reach = _gql("{" + " ".join(
-                'd%s:disease(efoId:"%s")%s' % (t.code, _efo(t.mondo_id), psel) for t in chunk) + "}")
+                'd%s:disease(efoId:"%s")%s' % (t.code, _node(t), psel) for t in chunk) + "}")
             ms += m
             reaches.append(reach)
             pdata.update(d)
+        # 被覆盖掉的那一档一并取回：不取的话"当初为什么换"只剩 targets.py 里一句注释，
+        # 重跑探针报不出换档前后的差值。只查覆盖病，一趟几秒。
+        over = [t for t in TARGETS if ot_node(t) != t.mondo_id]
+        odata: dict = {}
+        if over:
+            d, m, reach = _gql("{" + " ".join(
+                'd%s:disease(efoId:"%s")%s' % (t.code, _efo(t.mondo_id), sel) for t in over) + "}")
+            ms += m
+            reaches.append(reach)
+            odata = d
         # 抽样看"带分数的靶点清单"到底给不给：判据要的是 rows，不是 count。
         # 分数按数据源拆开（datasourceScores），Target 上的名字字段是 approvedSymbol/approvedName
         sdata, m, reach = _gql(
             '{d:disease(efoId:"%s"){associatedTargets(page:{index:0,size:3}){count'
             ' rows{score novelty target{id approvedSymbol approvedName}'
-            ' datasourceScores{id score}}}}}' % _efo(TARGETS[0].mondo_id))
+            ' datasourceScores{id score}}}}}' % _node(TARGETS[0]))
         ms += m
         reaches.append(reach)
         meta, m, reach = _gql("{meta{apiVersion{x y z suffix}}}")
         ms += m
         reaches.append(reach)
-        out = {"diseases": data, "with_parents": pdata, "assoc_sample": sdata, "meta": meta}
+        out = {"diseases": data, "with_parents": pdata, "overridden": odata,
+               "assoc_sample": sdata, "meta": meta}
         key_dir = raw.archive_dir(SOURCE, ver or "no-version")
         blobs = {"manifest.json": man, "dirs.json": dirs, "diseases.json": out,
                  "croissant.json": raw_manifest}
@@ -224,6 +243,8 @@ def probe(offline: bool = False) -> ProbeResult:
         covered += 1 if ok else 0
         per.append({
             "code": t.code, "ot_id": d.get("id"), "name": d.get("name"),
+            "node": _node(t), "node_name": d.get("name"),
+            "node_declared": t.mondo_id, "swapped": _node(t) != _efo(t.mondo_id),
             "assoc": at, "lit": lit, "pheno": pheno, "drugs": drugs,
             "desc": bool(d.get("description")), "xrefs": len(d.get("dbXRefs") or []),
             "parent": (widest or {}).get("name") or "",
@@ -231,7 +252,15 @@ def probe(offline: bool = False) -> ProbeResult:
             "parent_lit": ((widest or {}).get("literatureOcurrences") or {}).get("count") or 0,
             "pass": ok,
         })
-    missing = [t.code for t in TARGETS if not data.get("d" + t.code)]
+    by_code = {p["code"]: p for p in per}
+    missing = [c for c in codes() if not by_code[c]["ot_id"]]
+    if missing:
+        # 200 回了但 disease 字段是 null：不是源坏了，是声明的节点号在 OT 不存在
+        # （或 efoId 这个参数换了）。让它过下去只会得到"这些病关联靶点 0"的假结论。
+        raise SystemExit(
+            "OT 按声明节点查不到 disease(...)："
+            + ", ".join(f"{c}→{by_code[c]['node']}" for c in missing)
+            + "——检查 targets.mondo_id / targets.OT_NODE")
     thin_lit = [f"{p['code']} {p['lit']:,}（父节点 {p['parent']} {p['parent_lit']:,}）"
                 for p in per if p["lit"] < 1000 and p["parent_lit"] >= 1000]
     fails = [p["code"] for p in per if not p["pass"]]
@@ -252,6 +281,22 @@ def probe(offline: bool = False) -> ProbeResult:
     av = ((out.get("meta") or {}).get("meta") or {}).get("apiVersion") or {}
     api_v = ".".join(str(av[k]) for k in ("x", "y", "z") if av.get(k)) or "?"
     pheno_zero = [p["code"] for p in per if not p["pheno"]]
+    # 换档前那一档的数字来自本趟另查的 overridden；旧归档里没这一项时文案写"未取回"
+    orig = {}
+    for k, v in (out.get("overridden") or {}).items():
+        dd = v or {}
+        orig[k[1:] if k.startswith("d") else k] = "assoc {:,}/lit {:,}/drugs {:,}".format(
+            (dd.get("associatedTargets") or {}).get("count") or 0,
+            (dd.get("literatureOcurrences") or {}).get("count") or 0,
+            (dd.get("drugAndClinicalCandidates") or {}).get("count") or 0)
+    swap_rows = [p for p in per if p["swapped"]]
+    swap_txt = "".join(
+        " 节点覆盖已生效（B7c 裁定）：{code} 从声明主条目 {dec} 换查 {node}（{name}），"
+        "换后 assoc {a:,}/lit {l:,}/drugs {d:,}，换前 {orig}。".format(
+            code=p["code"], dec=p["node_declared"], node=p["node"], name=p["node_name"],
+            a=p["assoc"], l=p["lit"], d=p["drugs"],
+            orig=orig.get(p["code"], "本趟未取回"))
+        for p in swap_rows)
 
     if covered == len(TARGETS) and not missing and sample:
         verdict = "ok"
@@ -262,15 +307,18 @@ def probe(offline: bool = False) -> ProbeResult:
 
     msg = (
         f"达标 {covered}/{len(TARGETS)}（判据＝关联靶点 ≥{MIN_ASSOC}）。"
-        f"点查这一层全中：18 病用 MONDO 号（冒号换下划线）直接命中，"
+        f"点查这一层全中：18 病的查询节点全部命中，"
         f"关联靶点最少的是 {lo['code']} {lo['assoc']:,} 个、最多 {hi['code']} {hi['assoc']:,} 个，"
         f"18 病合计 {assoc_all:,} 条；在研药（drugAndClinicalCandidates）合计 "
         f"{sum(p['drugs'] for p in per):,}。"
         f"带分数的靶点清单实测可取（{TARGETS[0].code} 前 {len(sample)} 条：{peek}）。"
-        f"窄档问题按实测报：{len(thin_lit)} 病的声明节点文献量不足千而父节点是主战场——"
+        + swap_txt
+        + f"其余 {len(TARGETS) - len(swap_rows)} 病仍按声明主条目查，"
+        "探针不自己按名字换档（换了就把 icd10 语义对齐破坏了），只读 targets.OT_NODE 这一份声明。"
+        "不随覆盖一起放宽是实测逼出来的：胰腺的宽档父节点比本节点更空"
+        "（drugAndClinicalCandidates 30 vs 本节点 463），层级上量不单调。"
+        f"换档后仍偏窄的：{len(thin_lit)} 病节点文献量不足千而父节点是主战场——"
         + ("；".join(thin_lit) if thin_lit else "无") + "。"
-        "这一维要显示'这一病的研究热度'就得按父节点或 EFO 宽档重新声明，"
-        "探针不自己按名字换档（换了就把 icd10 语义对齐破坏了），交 B7 裁。"
         f"批量层实测：平台 {man.get('version')}（发布 {man.get('datePublished')}）的 "
         f"output/ 有 {len(dirs)} 个数据集、{shards} 个 parquet 分片、合计 {total_bytes / 2**30:.1f} GiB，"
         "最大五个 " + "、".join(f"{b['dataset']} {b['bytes'] / 2**20:.0f} MB" for b in biggest) + "。"
@@ -282,18 +330,17 @@ def probe(offline: bool = False) -> ProbeResult:
         "值是字面量 'sha256' 占位），所以体量只能逐目录列，"
         f"这一趟 {len(dirs) + 1} 个 LIST 请求。整库不是'顺手就能下'的量级，"
         "站点按点查用就够，落库不需要整包。"
-        f"许可按清单原文报：croissant 的 license 字段是 {man.get('license')}，"
-        "与登记表里写的'平台 Apache 2.0，数据随上游'不是同一句话，"
-        f"citeAs 给了 BibTeX（{str(man.get('citeAs'))[:60]}…）——B7 定署名口径时以清单为准还是以"
-        "平台条款为准，需要人来裁，探针不改登记表里已有的说法。"
+        f"许可按清单原文报：croissant 顶层 license 是一个 URL 字符串（{man.get('license')}，"
+        f"即 CC0），且 {man.get('distN')} 个 distribution 没有一个自带许可字段——"
+        "整份清单只在顶层说了一次话。B7c 已裁：登记表保留更严的那句'平台 Apache 2.0，数据随上游'，"
+        "并把这份 CC0 记成第二个冲突声明（落在 source.legal_note 里），站点署名两句一起带，"
+        f"哪一层哪天改了以本字段对账。citeAs 给了 BibTeX（{str(man.get('citeAs'))[:60]}…）。"
         f"给 B6 顺带的负向证据：{len(pheno_zero)} 病的 phenotypes.count 为 0"
         f"（{', '.join(pheno_zero)}），其余病也只在 2~8 条——OT 的表型注释当不了症状维的源。"
         f"平台版本号来自 croissant 的 version（{man.get('version')}），"
         f"GraphQL 的 meta 另给 apiVersion={api_v}（是个 x/y/z 对象，不是字符串）；"
         "整库没有可匿名取的'数据发布日'以外字段，release_date 用 croissant 的 datePublished。"
     )
-    if missing:
-        msg += f" 点查拿不到的病：{', '.join(missing)}——MONDO 号在 OT 里没有对应节点。"
     if fails:
         msg += f" 关联靶点不足 {MIN_ASSOC} 的病：{', '.join(fails)}。"
 
@@ -310,6 +357,8 @@ def probe(offline: bool = False) -> ProbeResult:
                      "associatedTargets.rows[].datasourceScores{id,score}",
                      "meta.apiVersion{x,y,z,suffix}", "croissant.distribution[]",
                      "croissant.recordSet[]", "croissant.version", "croissant.datePublished",
+                     "croissant.license（顶层单点，distribution 逐条目无）",
+                     "OT_NODE 覆盖后的 node/node_name/node_declared/swapped",
                      "output/<dataset>/*.parquet"],
         sample=per,
         raw_path=raw.rel(key_dir),
