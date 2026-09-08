@@ -128,10 +128,15 @@ assoc 17,064 / lit 724,160 / drugs 1,036）。代价如实记在 `targets.py`：
 - SEER 年龄组只有 8 档宽分组，画 5 岁组标化率要另走 SEER*Explorer 的未公开 JSON 接口。
 - 六个 `paused` 的码表源如果 P1 里哪个维要启用，得先补一支内容级探针，
   否则矩阵那一列永远没有逐病格。
-- SEER 的 18 页 HTML 归档只存在于本机（`data/raw/` 整个在 `.gitignore` 里），
-  而 `legal_note` 要求"表结构改版频繁、解析器必须留 fixture 回归"——换机器 clone 后
-  `--offline` 直接报"需要先有一份归档"，这一维的解析器目前没有任何回归保护。
-  P1 建表前要么把 2~3 页代表页（`leuks` 无分期表、`prost` 无性别标签这两个判据分支）检进仓库，
-  要么先立 fixture 约定；MONDO 那 51 MB 不适用这条，归档该不该进仓库是按体积逐源判的。
+- ✅ SEER 的 18 页 HTML 归档只存在于本机（`data/raw/` 整个在 `.gitignore` 里），而
+  `legal_note` 要求"表结构改版频繁、解析器必须留 fixture 回归"——这条已在 P1 的 C1b 收口：
+  4 页上游原样字节检进 `etl/tests/fixtures/seer_statfacts/`，判据分支各占一页
+  （`lungb` 费率表的 Males/Females `<h5>` 证据链、`leuks` 无分期表走豁免、
+  `nhl` 同为血液肿瘤却有 Ann Arbor 5 档、`prost` 没有 `<h5>` 性别只有口径行）。
+  `manifest.json` 带着 `dataset_release.id` / `source_probe_log.id` 与逐页 sha256，
+  `python etl/tests/run.py` 先比字节再断言解析结果，顺当上游漂移检测；整条目录在
+  `.gitattributes` 里按二进制处理，否则换机器 checkout 会被 CRLF 归一改成另一份输入。
+  归档该不该进仓库仍是按体积逐源判的（MONDO 那 51 MB 不适用这条），且 fixture 只保护解析回归，
+  18 页的覆盖裁定还是要实跑重取。
 - **CMeSH 中文医学主题词表**（IMICAMS 维护、NLM 有分发）是唯一没测过的中文症状名候选，
   可达性与许可都未测。它是 P1 之后要补中文名列时的第一站，本裁定不含它。

@@ -1,0 +1,4 @@
+# 解析回归的 fixture 必须是上游原样字节。本机 git 配了 core.autocrlf=true，默认会把 LF
+# 归一成 CRLF：改完 sha256 对不上不说，解析器看到的输入也和探针当时取到的不是同一份，
+# 回归测试就成了自证。整条 `etl/tests/fixtures/` 都按二进制处理，不按文件类型逐个列。
+etl/tests/fixtures/** -text

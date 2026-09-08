@@ -1,0 +1,33 @@
+{
+  "source": "seer_statfacts",
+  "dataset": "statfacts-html",
+  "upstream_version": "2026-04-22",
+  "release_id": 12,
+  "probe_log_id": 43,
+  "pages_total": 18,
+  "aggregate_sha256": "ef59788ceaa5d1ea6524a356e169b2fb6ded096cfe22c7f229801b4ceaefeeb8",
+  "aggregate_bytes": 1546896,
+  "why": "SEER 的表结构改版频繁（source.legal_note 里就写了这一条），而 18 页 HTML 归档只存在于本机 data/raw/（整个目录在 .gitignore 里），换机器 clone 后这一维的解析器没有任何回归保护。这里检四页代表页，判据的每个分支各有一页在场上。页面字节未改写，所以 sha256 既是来源凭据也是漂移检测：重新采集时这四页若变了，说明上游改了版，要连着看探针的逐病格。aggregate_* 是那一次归档全 18 页按文件名排序拼接的 sha256（= dataset_release.sha256），只有 data/raw 在本机时才算得出来，记在这里是为了对账而不是让跑测器去核。",
+  "files": {
+    "lungb.html": {
+      "bytes": 87245,
+      "sha256": "e7d872bd83aa9b27feab8051100a9324442b08eb0e5394029b0812cce05437e9",
+      "covers": "常规页：8 张 scrapeTable、年度序列两行表头、双性别费率表各带一个 <h5> 标签（rate_sexes 这条证据链）、分期 4 档、种族 6 组、年龄 8 档"
+    },
+    "leuks.html": {
+      "bytes": 81561,
+      "sha256": "b3c79cd1e5cc8d0967be38965eae4ddc0d909ab3ef1271f6a998e7d1c877b62e",
+      "covers": "无分期表那一支：全页找不到 \"5-Year Relative Survival by Stage at Diagnosis\" 标题，stage_survival 必须解析成 None，探针才走 NO_STAGE 豁免而不是按 ≥3 档判它不达线"
+    },
+    "nhl.html": {
+      "bytes": 85301,
+      "sha256": "c250286a99da00dd532e437f5bb5beeb204081fd07721c792e1699a3031c4b8e",
+      "covers": "同为血液肿瘤却有 Ann Arbor 5 档：盯住\"别按 category='heme' 一律豁免\"这条错路"
+    },
+    "prost.html": {
+      "bytes": 86258,
+      "sha256": "1a40f0f828200a555a99c66a0cc680d719a2ed825d347cba88d6d6f52634513b",
+      "covers": "性别特异页那一支：页面上根本没有 <h5> 性别标签、也没有种族费率表，性别只写在口径行 \"SEER 21 2019–2023, All Races, Males\" 里；拿它核对女性专属病必须判成 conflict 而不是 missing"
+    }
+  }
+}

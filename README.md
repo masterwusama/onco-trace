@@ -133,6 +133,7 @@ ops\etl.ps1 probe             # 专项覆盖度探针，不带 --code 就是全�
 
 ```powershell
 python db/tests/run.py status            # 表行数 + legal_note 门禁
+python etl/tests/run.py                  # 解析回归，用仓库内的上游页面，不联网
 ops\etl.ps1 probe-reach --code mondo     # 只探指定源的可达性
 ops\etl.ps1 probe --list                 # 有哪些专项探针
 ops\etl.ps1 probe --code mondo --offline # 用 data/raw 归档离线重放，不重新下载
@@ -148,7 +149,8 @@ ops\etl.ps1 status                       # 库现状速览
 | 目录 | 内容 |
 |---|---|
 | `db/` | `schema.sql` 是全量建表脚本，`migrations/` 是增量变更，`tests/run.py` 是迁移与断言跑测器 |
-| `etl/` | `onco_etl` 采集与探针层，`python -m onco_etl` 运行 |
+| `etl/` | `onco_etl` 采集与探针层，`python -m onco_etl` 运行；`--offline` 重放读本机 `data/raw/` 归档 |
+| `etl/tests/` | 解析回归：`fixtures/` 存代表页的上游原样字节，`run.py` 先比 sha256 再断言解析结果 |
 | `docs/` | `数据源探针计划.md`（判据与逐批实测）、`数据源覆盖度.md`（脚本生成，勿手改）、`MVP裁定.md`（P0 出口：建哪些表） |
 | `data/` | `raw/` 原始响应归档、`exports/` 待抽查草稿，都不入库不提交 |
 | `ops/` | PowerShell 包装脚本 |

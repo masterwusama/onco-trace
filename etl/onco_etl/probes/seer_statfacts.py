@@ -247,7 +247,9 @@ def probe(offline: bool = False) -> ProbeResult:
         key_dir = raw.newest_dir(SOURCE, "*.html")
         if not key_dir:
             raise SystemExit(
-                f"离线重放需要先有一份归档：data/raw/{SOURCE}/<version>/*.html 不存在"
+                f"离线重放需要先有一份归档：data/raw/{SOURCE}/<version>/*.html 不存在。"
+                "本仓库只检了 4 页代表页做解析回归（etl/tests/fixtures/seer_statfacts/，"
+                "跑 `python etl/tests/run.py`，不需要归档），18 页的覆盖裁定必须实跑重取"
             )
 
     pages: dict[str, dict] = {}
