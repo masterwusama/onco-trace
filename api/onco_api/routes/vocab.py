@@ -23,11 +23,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import Connection
 
-from .. import gaps as G
 from ..db import get_conn, rows
-from ..dimensions import DIM_BY_KEY, NOT_REJECTED, counts_by_code
+from ..dimensions import NOT_REJECTED
 from ..serialize import PROV_COLS, Refs, aliased, cols, hydrate
-from . import get_disease
+from . import get_disease, shell
 
 router = APIRouter(prefix="/api", tags=["vocabulary"])
 
@@ -45,24 +44,6 @@ _ASSOC = ("id", "role", "uri_tier", "trait_label", "trait_uri", "snps", "risk_al
 _RNODE = ("id", "kind", "label", "label_zh") + PROV_COLS
 
 GENETIC, EXPOSURE = "genetic", "exposure"
-
-
-def _shell(conn: Connection, code: str, dis: dict, dim: str, extra: dict) -> dict:
-    """四台共用的头部：病身份、这一维的表名与口径要点、与列表页同一份度量和空态。
-
-    `measures` 与 `gaps` 一律从 `counts_by_code` 现算，所以维度页与列表页说的是同一组数——
-    这条不是约定，跑测器逐病比过。
-    """
-    counts = counts_by_code(conn)[code]
-    return {
-        "code": dis["code"],
-        "name_zh": dis["name_zh"],
-        "table": DIM_BY_KEY[dim].table,
-        "note": DIM_BY_KEY[dim].note,
-        "conventions": extra,
-        "measures": counts[dim],
-        "gaps": [g for g in G.gaps_for_disease(counts, dis) if g["dim"] == dim],
-    }
 
 
 @router.get("/diseases/{code}/anatomy")
@@ -87,7 +68,7 @@ def disease_anatomy(
         mounted = hydrate(refs, "disease_anatomy", aliased(r, "m"))
         item["mounted"] = mounted
         tiers[mounted["role"]].append(item)
-    out = _shell(conn, code, dis, "anatomy", {
+    out = shell(conn, code, dis, "anatomy", {
         "roles": "primary 是器官级分组（页面「这一病长在哪里」显示它）；subsite 是 MONDO 的亚部位 "
                  "term，只做下钻，两档不混排也不相加",
         "basis": "matched_codes 回答「凭什么把这条算给肺」：primary 是与该 site recode 的拓扑码"
@@ -127,7 +108,7 @@ def disease_histology(
             raise HTTPException(
                 404, f"这一病没有 group_code={group!r} 这一档。可取的组码见本接口不带 group 的响应"
                      f"（{len(have)} 档，例如 {have[:3]}）")
-        out = _shell(conn, code, dis, "histology", {
+        out = shell(conn, code, dis, "histology", {
             "one_group": f"这一档 {group} 下的码行；每行两份出处——码表一行、逐病展开一行",
             "via_recode": "这一档是从哪些 site recode 展开来的（多对一时逐条留着，不合并）",
         })
@@ -154,7 +135,7 @@ def disease_histology(
         " GROUP BY h.group_code ORDER BY h.group_code",
         {"did": dis["id"]},
     )
-    out = _shell(conn, code, dis, "histology", {
+    out = shell(conn, code, dis, "histology", {
         "grouped": "一病 129–212 个形态学码收在 32–63 个三位组码下，默认只回组档与条数；"
                    "组档是聚合，不冒充一行事实，所以出处不在这一层——要某一档的码行用 ?group=",
         "why_no_provenance": "每档带的 codes / via_recodes / mount_releases / code_releases 是"
@@ -204,7 +185,7 @@ def disease_symptoms(
         b["items"].append(item)
     for b in blocks.values():
         b["n_items"] = len(b["items"])
-    out = _shell(conn, code, dis, "symptom", {
+    out = shell(conn, code, dis, "symptom", {
         "per_source": "一个源一块，不并表也不跨源去重：中文那两路只覆盖 7/18 病，"
                       "并起来会让另外 11 病看起来也有中文名",
         "name_as_written": "name 是源里的说法原样存，没有规范成同义词表；heading 是它所在小节，"
@@ -257,7 +238,7 @@ def disease_risk_factors(
         item["factor"] = hydrate(refs, "risk_factor", aliased(r, "a"))
         return item
 
-    out = _shell(conn, code, dis, "risk", {
+    out = shell(conn, code, dis, "risk", {
         "two_layers": "genetic 与 exposure 两栏分列不相加：一边是位点级的关联（带 OR/β 与 p 值、"
                       "给不出暴露语义），一边是可干预暴露清单（给得出名字、一个强度都没有）",
         "row_is": "genetic 一行是一个关联（研究 × 位点 × p 值），不是一个位点：所以榜同时回"

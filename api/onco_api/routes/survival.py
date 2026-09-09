@@ -14,11 +14,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Path
 from sqlalchemy import Connection
 
-from .. import gaps as G
 from ..db import get_conn, rows
-from ..dimensions import DIM_BY_KEY, NOT_REJECTED, counts_by_code
+from ..dimensions import NOT_REJECTED
 from ..serialize import PROV_COLS, Refs, to_series
-from . import get_disease
+from . import get_disease, shell
 
 router = APIRouter(prefix="/api", tags=["survival"])
 
@@ -59,20 +58,14 @@ def disease_survival(
     # 全分期头条取年份最大的那一串；实测每病恰好一串（跑测器把这条钉成 1）
     heads = sorted((s for s in single if s["stage_scheme"] == NOT_STAGED),
                    key=lambda s: -s["points"][0]["year"])
-    counts = counts_by_code(conn)[code]
-    dim = DIM_BY_KEY["survival"]
+    out = shell(conn, code, dis, "survival",
+                {"series_key": list(SERIES_HEADER), "layer_split": "单点=当期，多点=序列"})
     return {
-        "code": dis["code"],
-        "name_zh": dis["name_zh"],
-        "table": dim.table,
-        "note": dim.note,
+        **out,
         "layers": LAYERS,
-        "conventions": {"series_key": list(SERIES_HEADER), "layer_split": "单点=当期，多点=序列"},
         "headline": _flatten(heads[0]) if heads else None,
         "by_stage": [_flatten(s) for s in single if s["stage_scheme"] != NOT_STAGED],
         "trend": trend,
-        "measures": counts["survival"],
-        "gaps": [g for g in G.gaps_for_disease(counts, dis) if g["dim"] == "survival"],
     }
 
 

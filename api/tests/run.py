@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""服务层跑测器：拿真库把十条接口的每个数字对账一遍。
+"""服务层跑测器：拿真库把十四条接口的每个数字对账一遍。
 
     python api/tests/run.py        # 退出码非 0 即有 FAIL（不需要 pytest）
 
@@ -14,6 +14,11 @@
 榜（/api/stats/compare）先在全库断言"五轴+年份钉死后一行一病、只有一个版本"，再让每个
 度量照自己回的 `needs`/`choices` 一路选到榜、与直查逐病对比——所以"钉死口径之后要不要再
 聚合"与"前端能不能不问人就把口径选完"都不是文档里的承诺，是跑出来的。
+研究层四台（试验/文献/靶点/在研药）第一次出现"一病几千行"，所以断言的重心跟着换三样：
+分页切出来那一页必须是同一个全序里的那一段（逐页走完等于整表，越界 offset 回空页而不是
+回整表）；分面按未过滤的整维算，所以"筛一次之后的 total_rows"必须正好等于分面那个数，
+而筛完选项集合不许缩水；`page.total_rows` 与 `source_hit.value` 各说一件事，文献那一台
+18/18 病必须不相等（每病截在 500 行而源命中上万）。
 只有三样东西是写死的：18 个疾病码（P0 基准，漂了就说明有人改了 targets.py）、
 docs/MVP裁定.md §二 那几处空态落在哪些病上（裁定本身，不是数据），
 以及各维分组应当互斥且覆盖全表这一结构性事实。词表四维另外钉两样：JOIN 出来的响应行该有哪些
@@ -21,6 +26,7 @@ docs/MVP裁定.md §二 那几处空态落在哪些病上（裁定本身，不�
 """
 from __future__ import annotations
 
+import gzip
 import json
 import re
 import sys
@@ -140,12 +146,14 @@ def check_guard(c: Checks) -> None:
 # ---------------------------------------------------------------- 路由清单
 def check_routes(c: Checks) -> None:
     paths = set(create_app().openapi()["paths"])
-    c.eq("routes", "D3a+D3b+D3c 注册的十条 API 路径", paths,
+    c.eq("routes", "D3a+D3b+D3c+D3d 注册的十四条 API 路径", paths,
          {"/api/meta", "/api/diseases", "/api/diseases/{code}",
           "/api/diseases/{code}/stats", "/api/diseases/{code}/survival",
           "/api/stats/compare",
           "/api/diseases/{code}/anatomy", "/api/diseases/{code}/histology",
-          "/api/diseases/{code}/symptoms", "/api/diseases/{code}/risk-factors"})
+          "/api/diseases/{code}/symptoms", "/api/diseases/{code}/risk-factors",
+          "/api/diseases/{code}/trials", "/api/diseases/{code}/publications",
+          "/api/diseases/{code}/targets", "/api/diseases/{code}/drugs"})
 
     # 解码表按 db/schema.sql 数，不靠人记：漏一列，那一列就以 "[…]" 字符串回到前端
     from onco_api.serialize import JSON_COLS
@@ -644,14 +652,16 @@ RISK_ASSOC_COLS = ("id", "role", "uri_tier", "trait_label", "trait_uri", "snps",
                    "or_beta", "effect_kind", "ci95_text", "pubmedid", "study_accession",
                    "initial_sample", "replication_sample", "paf", "paf_basis")
 RISK_NODE_COLS = ("id", "kind", "label", "label_zh")
-VOCAB_TABLES = {"anatomy": "disease_anatomy", "histology": "disease_histology",
-                "symptom": "symptom", "risk": "disease_risk_factor"}
+DIM_TABLES = {"anatomy": "disease_anatomy", "histology": "disease_histology",
+              "symptom": "symptom", "risk": "disease_risk_factor",
+              "trial": "trial", "publication": "publication",
+              "target": "disease_target", "drug": "drug"}
 
 
 def _shell_ok(c: Checks, g: str, d: dict, row: dict, dim: str, extra: list[str]) -> None:
-    """四台共用的头部：身份、注册表带出的表名与口径、与列表页同一份度量和空态。"""
+    """八台共用的头部：身份、注册表带出的表名与口径、与列表页同一份度量和空态。"""
     c.eq(g, "响应块齐", sorted(d), sorted([*_SHELL_KEYS, *extra]))
-    c.eq(g, "table 就是这一维注册的那张表", d["table"], VOCAB_TABLES[dim])
+    c.eq(g, "table 就是这一维注册的那张表", d["table"], DIM_TABLES[dim])
     c.eq(g, "note 与列表页那一维同一句", d["note"], row["dims"][dim]["note"])
     c.eq(g, "measures 与列表页同一份", d["measures"], row["dims"][dim]["measures"])
     c.eq(g, "gaps 只收这一维、与列表页同一条", d["gaps"],
@@ -949,6 +959,527 @@ def _vocab_risk(c: Checks, cl: TestClient, db, code: str, did: int, row: dict) -
          (min(5, total), d["measures"], d["exposure"]["returned"]))
 
 
+# ------------------------------------------------------------- 研究层四维
+# 这一层的四台与前面三批最不一样：行多到必须分页。所以断言的重心从"数字对不对"挪到
+# 分页特有的三件事上——(1) 这一页确实是那个序切出来的那一段，(2) 分面说的"还能筛什么、
+# 各剩几行"跟真筛一次的结果一致，(3) 源命中数与落库行数分开回，且 publication 那一台
+# 必须不相等。两路对照照旧：路由发一条 SQL，这边把整维的键取回 Python 里排序、切片、
+# 数分面，再对返回那一页逐列比。
+PHASE_NONE = "(none)"                                    # 与路由同一个哨兵，两边各写一份
+TRIAL_COLS = ("id", "disease_id", "dataset_code", "nct_id", "brief_title", "title",
+              "overall_status", "status_bucket", "study_type", "phases", "enrollment",
+              "design_info", "conditions", "interventions", "arm_groups", "primary_outcome",
+              "elig_sex", "healthy_volunteers", "lead_sponsor", "collaborators",
+              "location_countries", "fda_regulated", "why_stopped", "matched_terms")
+TRIAL_JSON = ("phases", "design_info", "conditions", "interventions", "arm_groups",
+              "collaborators", "location_countries", "matched_terms")
+TRIAL_INT = ("id", "disease_id", "enrollment", "healthy_volunteers", "fda_regulated")
+PUB_COLS = ("id", "disease_id", "dataset_code", "ext_key", "pmid", "doi", "title", "journal",
+            "pub_year", "is_oa", "in_epmc", "has_pdf", "has_abstract", "matched_terms")
+PUB_INT = ("id", "disease_id", "pmid", "pub_year", "is_oa", "in_epmc", "has_pdf", "has_abstract")
+DRUG_COLS = ("id", "disease_id", "dataset_code", "drug_id", "drug_name", "phase", "moa")
+TARGET_NODE_COLS = ("id", "ot_id", "approved_symbol", "approved_name", "dataset_code")
+TARGET_REL_COLS = ("id", "disease_id", "target_id", "dataset_code", "score", "novelty",
+                   "datasource_scores", "node_used")
+RESEARCH_PAGE_KEYS = ["facets", "filters", "items", "page", "source_hit"]
+
+
+def _typed(db, sql, params, cols, ints=(), decs=(), jsons=()):
+    """直查行 → 与接口同一套出参类型（整数、Decimal 转数、JSON 解码），按业务键建索引。
+
+    这边不 import 路由的转换函数：类型转换写错一遍，两路就会一起错，对照就白做了。
+    """
+    out = {}
+    for r in _q(db, sql, params):
+        w = {k: r[k] for k in cols}
+        for k in ints:
+            w[k] = _num(r[k])
+        for k in decs:
+            w[k] = _dec(r[k])
+        for k in jsons:
+            w[k] = _jload(r[k])
+        out[r["__key"]] = (w, str(r["__src"]), str(r["__rev"]))
+    return out
+
+
+def _num(v):
+    return None if v is None else int(v)
+
+
+def _dec(v):
+    return None if v is None else float(v)
+
+
+def _jload(v):
+    return None if v is None else json.loads(v)
+
+
+def check_research(c: Checks, cl: TestClient, db, ids: dict) -> None:
+    per_code = {i["code"]: i for i in cl.get("/api/diseases").json()["items"]}
+    for code in CODES:
+        did = ids[code]
+        # 一台的形状（少一个键、多一列、接口 500）只该红它自己那一格，其余 71 台继续跑完
+        for g, fn in (("resT", _research_trials), ("resP", _research_publications),
+                      ("resG", _research_targets), ("resD", _research_drugs)):
+            try:
+                fn(c, cl, db, code, did, per_code[code])
+            except Exception as e:  # noqa: BLE001 跑测器宁可红一片，也不许悄悄少跑一段
+                c.ok(g, f"{code} 这一台的对账整台跑完（没抛异常）", False,
+                     f"{type(e).__name__}: {e}")
+
+
+def _page_ok(c: Checks, g: str, d: dict, ordered: list, limit: int, offset: int) -> dict:
+    """分页三件事：总数、这一页是那一段、后面还有没有。`ordered` 是 Python 侧排好的全序。"""
+    pg = d["page"]
+    c.eq(g, "page 五键齐", sorted(pg), ["has_more", "limit", "offset", "returned", "total_rows"])
+    c.eq(g, "page.total_rows = 整维行数", pg["total_rows"], len(ordered))
+    c.eq(g, "page 回显的 limit/offset 就是发过去的那两个", (pg["limit"], pg["offset"]),
+         (limit, offset))
+    c.eq(g, "returned = items 长度", pg["returned"], len(d["items"]))
+    c.eq(g, "has_more 说的是这一段后面还有行", pg["has_more"], offset + len(d["items"]) < len(ordered))
+    c.eq(g, "items 的条数不超过 limit", len(d["items"]) <= limit, True)
+    return pg
+
+
+def _facets_ok(c: Checks, g: str, d: dict, axes: list[str]) -> None:
+    """分面是聚合不是行：只有 value 与 rows 两键，且回的轴就是声明的那些。
+
+    出处一旦挂进聚合项，页面就会把"这一档有 1,200 行"当成某一行事实来署名——而它是
+    这个病这一维数出来的，没有哪一行是它的出处。
+    """
+    c.eq(g, "facets 就回这些轴", sorted(d["facets"]), sorted(axes))
+    c.eq(g, "每个分面项只有 value 与 rows（聚合层不许挂出处）",
+         {tuple(sorted(f)) for k in axes for f in d["facets"][k]}, {("rows", "value")})
+    c.ok(g, "分面每档行数都是正整数（0 行的档不该占一个选项）",
+         all(isinstance(f["rows"], int) and f["rows"] > 0
+             for k in axes for f in d["facets"][k]),
+         f"{ {k: len(d['facets'][k]) for k in axes} }")
+
+
+def _hit_ok(c: Checks, g: str, db, did: int, d: dict, metric: str, captured) -> None:
+    """源命中数与落库行数分开回；captured 传 True/False 是把这一维的实测结论钉住。"""
+    w = _one(db, "SELECT value, f.extract_method, f.review_status, s.code AS src"
+                 " FROM stat_fact f JOIN source s ON s.id = f.source_id"
+                 " WHERE disease_id=%s AND metric=%s AND estimate_basis='query_count'"
+                 " AND f.review_status<>'rejected'", (did, metric))
+    h = d["source_hit"]
+    c.eq(g, "source_hit.value = stat_fact 里那一行 query_count", h["value"], int(w["value"]))
+    c.eq(g, "source_hit.stored_rows = measures.rows", h["stored_rows"], d["measures"]["rows"])
+    c.eq(g, "captured 是现算的相等判断", h["captured"], h["value"] == h["stored_rows"])
+    c.eq(g, f"captured 与实测一致（{metric}）", h["captured"], captured)
+    c.eq(g, "not_captured 是那笔差额", h["not_captured"], max(h["value"] - h["stored_rows"], 0))
+    p = h.get("provenance") or {}
+    c.eq(g, "命中数带的是 stat_fact 那一行自己的出处（不是研究表的）",
+         (p.get("source", {}).get("code"), p.get("extract_method"), p.get("review_status")),
+         (w["src"], w["extract_method"], w["review_status"]))
+    c.ok(g, "命中数指向的源带具名许可（页面要说这个数是哪个源报的）",
+         bool(p.get("source", {}).get("license")), str(p.get("source"))[:70])
+
+
+def _research_trials(c: Checks, cl: TestClient, db, code: str, did: int, row: dict) -> None:
+    g = f"resT[{code}]"
+    d = cl.get(f"/api/diseases/{code}/trials").json()
+    _shell_ok(c, g, d, row, "trial", RESEARCH_PAGE_KEYS)
+    keys = _q(db, "SELECT id, nct_id, status_bucket, phases FROM trial WHERE disease_id=%s",
+              (did,))
+    ordered = sorted(keys, key=lambda r: r["nct_id"])       # 路由用 SQL 排序，这里用 Python
+    pg = _page_ok(c, g, d, ordered, 50, 0)
+    _facets_ok(c, g, d, ["status_bucket", "phase"])
+    _hit_ok(c, g, db, did, d, "trial_count", True)
+    want_nct = [str(r["nct_id"]) for r in ordered[:pg["limit"]]]
+    c.eq(g, "这一页就是 nct_id 序切出来的那一段（含顺序）",
+         [x["nct_id"] for x in d["items"]], want_nct)
+    c.eq(g, "一病之内 nct_id 不重复（这个序是全序，翻页不会重行）",
+         len({r["nct_id"] for r in keys}), len(keys))
+    c.eq(g, "measures.nct = 去重 NCT 数（一病之内与行数相等）",
+         d["measures"]["nct"], len({r["nct_id"] for r in keys}))
+    fb = {}
+    for r in keys:
+        fb[r["status_bucket"]] = fb.get(r["status_bucket"], 0) + 1
+    c.eq(g, "status_bucket 分面 = Python 计数",
+         {x["value"]: x["rows"] for x in d["facets"]["status_bucket"]}, fb)
+    fp = {}
+    for r in keys:
+        ph = _jload(r["phases"])
+        for v in (set(ph) if ph else {PHASE_NONE}):
+            fp[v] = fp.get(v, 0) + 1
+    c.eq(g, "phase 分面 = Python 计数（数组每档各计一次、无档归 (none)）",
+         {x["value"]: x["rows"] for x in d["facets"]["phase"]}, fp)
+    c.ok(g, "phase 分面合计 ≥ 行数（一档多行的研究重复计）",
+         sum(fp.values()) >= len(keys), f"{sum(fp.values())} vs {len(keys)}")
+    top = max(d["facets"]["phase"], key=lambda x: (x["rows"], str(x["value"])))
+    f = cl.get(f"/api/diseases/{code}/trials",
+               params={"phase": top["value"], "limit": 200}).json()
+    c.eq(g, f"?phase={top['value']} 的 total_rows 就是分面那个数",
+         f["page"]["total_rows"], fp[top["value"]])
+    if top["value"] == PHASE_NONE:
+        c.ok(g, "?phase=(none) 回的行真的没有 phases",
+             all(x["phases"] is None for x in f["items"]), f"{len(f['items'])} 行")
+    else:
+        c.ok(g, f"?phase={top['value']} 回的行数组里真的含它",
+             all(top["value"] in (x["phases"] or []) for x in f["items"]), f"{len(f['items'])} 行")
+    c.eq(g, "分面不受过滤影响（选项、顺序与各档行数都不许跟着筛变）",
+         [(x["value"], x["rows"]) for x in f["facets"]["phase"]],
+         [(x["value"], x["rows"]) for x in d["facets"]["phase"]])
+    c.eq(g, "筛完 measures 不变（它说的是整维，不是这一页）", f["measures"], d["measures"])
+    c.eq(g, "未请求时 filters 回显每一个轴都是未设",
+         d["filters"], {"status_bucket": None, "phase": None, "include": []})
+    c.eq(g, "筛过的轴在 filters 里回显出来（页面据此标出当前筛）",
+         (f["filters"]["phase"], f["filters"]["status_bucket"]), (top["value"], None))
+    want = _typed(
+        db,
+        "SELECT nct_id AS __key, t.id, t.disease_id, t.dataset_code, t.nct_id, t.brief_title,"
+        " t.title, t.overall_status, t.status_bucket, t.study_type, t.phases, t.enrollment,"
+        " t.design_info, t.conditions, t.interventions, t.arm_groups, t.primary_outcome,"
+        " t.elig_sex, t.healthy_volunteers, t.lead_sponsor, t.collaborators,"
+        " t.location_countries, t.fda_regulated, t.why_stopped, t.matched_terms,"
+        " s.code AS __src, t.review_status AS __rev"
+        " FROM trial t JOIN source s ON s.id = t.source_id"
+        f" WHERE disease_id=%s AND nct_id IN ({','.join(['%s'] * len(want_nct))})",
+        (did, *want_nct), TRIAL_COLS, ints=TRIAL_INT, jsons=TRIAL_JSON)
+    c.eq(g, "返回那一页在库里都能找到（不漏一行不多一行）", sorted(want), sorted(set(want_nct)))
+    for it in d["items"]:
+        w, src, rev = want[str(it["nct_id"])]
+        c.eq(g, f"试验 {it['nct_id']} 全列对照（含 JSON 解码）",
+             {**{k: it[k] for k in TRIAL_COLS}, "provenance": None},
+             {**w, "provenance": None})
+        c.eq(g, f"试验 {it['nct_id']} 出处指向 trial 那一行的源与复核状态",
+             (it["provenance"]["source"]["code"], it["provenance"]["review_status"]), (src, rev))
+    _shape_ok(c, g, "行就是 trial 的业务列，没有多出来的评分键", d["items"], TRIAL_COLS, ())
+    c.ok(g, "默认不带两段大字段（一页 ~120 KB 而不是 ~290 KB）",
+         all("eligibility" not in x and "publications" not in x for x in d["items"]))
+    c.eq(g, "整页都没有 disease_id 以外的病（按病筛真的生效）",
+         {x["disease_id"] for x in d["items"]}, {did})
+
+
+def _research_publications(c: Checks, cl: TestClient, db, code: str, did: int, row: dict) -> None:
+    g = f"resP[{code}]"
+    d = cl.get(f"/api/diseases/{code}/publications").json()
+    _shell_ok(c, g, d, row, "publication", RESEARCH_PAGE_KEYS)
+    keys = _q(db, "SELECT id, pub_year, is_oa, in_epmc FROM publication WHERE disease_id=%s",
+              (did,))
+    ordered = sorted(keys, key=lambda r: int(r["id"]))      # 装载序＝EPMC 相关度序
+    pg = _page_ok(c, g, d, ordered, 50, 0)
+    _facets_ok(c, g, d, ["pub_year", "is_oa"])
+    _hit_ok(c, g, db, did, d, "publication_count", False)
+    c.eq(g, "每病固定 500 行（上限样本，与命中数不等）", d["measures"]["rows"], 500)
+    c.ok(g, "命中数严格大于落库行数（这一维没取满）",
+         d["source_hit"]["value"] > d["source_hit"]["stored_rows"],
+         f"{d['source_hit']['value']} vs {d['source_hit']['stored_rows']}")
+    c.eq(g, "这一页就是 id（装载序＝源相关度序）切出来的那一段",
+         [x["id"] for x in d["items"]], [int(r["id"]) for r in ordered[:pg["limit"]]])
+    c.eq(g, "id 严格升序（全序，翻页不重行）",
+         all(a["id"] < b["id"] for a, b in zip(d["items"], d["items"][1:])), True)
+    yrs, oas = {}, {}
+    for r in keys:
+        yrs[r["pub_year"]] = yrs.get(r["pub_year"], 0) + 1
+        oas[r["is_oa"]] = oas.get(r["is_oa"], 0) + 1
+    c.eq(g, "pub_year 分面 = Python 计数",
+         {x["value"]: x["rows"] for x in d["facets"]["pub_year"]}, yrs)
+    c.eq(g, "is_oa 分面 = Python 计数（0 与 1 两档，没有 NULL 档）",
+         {x["value"]: x["rows"] for x in d["facets"]["is_oa"]}, oas)
+    c.eq(g, "is_oa=1 的分面数与 oa 度量同一份", oas.get(1, 0), d["measures"]["oa"])
+    c.eq(g, "in_epmc 度量 = 这一病 in_epmc=1 的行数（独立另问一次）",
+         d["measures"]["in_epmc"], sum(1 for r in keys if r["in_epmc"] == 1))
+    top_year = max(d["facets"]["pub_year"], key=lambda x: (x["rows"], x["value"]))
+    fy = cl.get(f"/api/diseases/{code}/publications",
+                params={"year": top_year["value"], "limit": 200}).json()
+    c.eq(g, f"?year={top_year['value']} 的 total_rows 就是分面那个数",
+         fy["page"]["total_rows"], yrs[top_year["value"]])
+    c.ok(g, f"?year={top_year['value']} 回的行 pub_year 全是它",
+         all(x["pub_year"] == top_year["value"] for x in fy["items"]), f"{len(fy['items'])} 行")
+    fo = cl.get(f"/api/diseases/{code}/publications", params={"is_oa": 1, "limit": 200}).json()
+    c.eq(g, "?is_oa=1 的 total_rows 就是分面那个数", fo["page"]["total_rows"], oas.get(1, 0))
+    c.ok(g, "?is_oa=1 回的行没有一条 is_oa 不是 1",
+         all(x["is_oa"] == 1 for x in fo["items"]), f"{len(fo['items'])} 行")
+    for fd in (fy, fo):
+        c.eq(g, "两个轴的分面都不跟着筛变",
+             {k: [(x["value"], x["rows"]) for x in fd["facets"][k]] for k in ("pub_year", "is_oa")},
+             {k: [(x["value"], x["rows"]) for x in d["facets"][k]] for k in ("pub_year", "is_oa")})
+    c.eq(g, "未请求时 filters 回显两个轴都是未设", fy["filters"]["is_oa"], None)
+    c.eq(g, "筛过的轴在 filters 里回显出来",
+         (fy["filters"]["year"], fo["filters"]["is_oa"]), (top_year["value"], 1))
+    want = _typed(
+        db, "SELECT p.id AS __key, p.id, p.disease_id, p.dataset_code, p.ext_key, p.pmid,"
+            " p.doi, p.title, p.journal, p.pub_year, p.is_oa, p.in_epmc, p.has_pdf,"
+            " p.has_abstract, p.matched_terms, s.code AS __src, p.review_status AS __rev"
+            " FROM publication p JOIN source s ON s.id = p.source_id"
+            " WHERE p.disease_id=%s ORDER BY p.id LIMIT 50", (did,),
+        PUB_COLS, ints=PUB_INT, jsons=("matched_terms",))
+    c.eq(g, "返回那一页在库里都能找到（不漏一行不多一行）", sorted(want),
+         sorted(int(r["id"]) for r in ordered[:pg["limit"]]))
+    for it in d["items"]:
+        w, src, rev = want[it["id"]]
+        c.eq(g, f"文献 {it['ext_key'][:24]} 全列对照",
+             {**{k: it[k] for k in PUB_COLS}, "provenance": None},
+             {**w, "provenance": None})
+        c.eq(g, f"文献 {it['ext_key'][:24]} 出处指向 publication 那一行",
+             (it["provenance"]["source"]["code"], it["provenance"]["review_status"]),
+             (src, rev))
+    _shape_ok(c, g, "行就是 publication 的业务列", d["items"], PUB_COLS, ())
+    c.eq(g, "整页都是这一病（按病筛真的生效）", {x["disease_id"] for x in d["items"]}, {did})
+    c.eq(g, "ext_key 在一病之内唯一（它是业务键）",
+         len({x["ext_key"] for x in d["items"]}), len(d["items"]))
+
+
+def _research_targets(c: Checks, cl: TestClient, db, code: str, did: int, row: dict) -> None:
+    g = f"resG[{code}]"
+    d = cl.get(f"/api/diseases/{code}/targets").json()
+    _shell_ok(c, g, d, row, "target", ["items", "page", "source_hit"])
+    keys = _q(db, "SELECT dt.id, dt.score, t.ot_id FROM disease_target dt"
+                  " JOIN target t ON t.id=dt.target_id WHERE dt.disease_id=%s", (did,))
+    ordered = sorted(keys, key=lambda r: (-float(r["score"]), r["ot_id"]))
+    pg = _page_ok(c, g, d, ordered, 50, 0)
+    _hit_ok(c, g, db, did, d, "target_count", True)
+    c.eq(g, "这一页就是 score 降序 + ot_id 兜底切出来的那一段",
+         [x["mounted"]["id"] for x in d["items"]], [int(r["id"]) for r in ordered[:pg["limit"]]])
+    sc = [x["mounted"]["score"] for x in d["items"]]
+    c.eq(g, "榜按 score 不升", all(a >= b for a, b in zip(sc, sc[1:])), True)
+    c.eq(g, "并列段内 ot_id 升序（不兜底就会重行漏行）",
+         [(x["mounted"]["score"], x["ot_id"]) for x in d["items"]],
+         sorted([(x["mounted"]["score"], x["ot_id"]) for x in d["items"]],
+                key=lambda p: (-p[0], p[1])))
+    c.eq(g, "整维没有同 (score, ot_id) 的两行（所以这个序是全序，兜底那一列够用）",
+         len({(float(r["score"]), r["ot_id"]) for r in keys}), len(keys))
+    c.eq(g, "一病之内 target_id 不重复（重复就是 JOIN 散列了）",
+         len({int(r["id"]) for r in keys}), len(keys))
+    page_ids = [int(r["id"]) for r in ordered[:pg["limit"]]]
+    want = {}
+    for r in _q(db, "SELECT dt.id AS __key, dt.id, dt.disease_id, dt.target_id,"
+                    " dt.dataset_code, dt.score, dt.novelty, dt.datasource_scores, dt.node_used,"
+                    " t.id AS nid, t.ot_id, t.approved_symbol, t.approved_name,"
+                    " t.dataset_code AS tdc, ms.code AS msrc, ns.code AS nsrc,"
+                    " dt.review_status AS mrev, t.review_status AS nrev"
+                    " FROM disease_target dt JOIN target t ON t.id=dt.target_id"
+                    " JOIN source ms ON ms.id=dt.source_id JOIN source ns ON ns.id=t.source_id"
+                    " WHERE dt.disease_id=%s AND dt.id IN ("
+                    + ", ".join(["%s"] * len(page_ids)) + ")", (did, *page_ids)):
+        rel = {k: r[k] for k in TARGET_REL_COLS if k not in ("id", "disease_id", "target_id",
+                                                             "score", "novelty")}
+        rel.update({"id": int(r["id"]), "disease_id": int(r["disease_id"]),
+                    "target_id": int(r["target_id"]), "score": _dec(r["score"]),
+                    "novelty": _dec(r["novelty"]),
+                    "datasource_scores": _jload(r["datasource_scores"])})
+        node = {"id": int(r["nid"]), "ot_id": r["ot_id"],
+                "approved_symbol": r["approved_symbol"],
+                "approved_name": r["approved_name"], "dataset_code": r["tdc"]}
+        want[int(r["__key"])] = (rel, node, str(r["msrc"]), str(r["nsrc"]),
+                                 str(r["mrev"]), str(r["nrev"]))
+    c.eq(g, "这一页每一行在库里都取到恰好一份（JOIN 不丢行也不散行）", len(want), len(page_ids))
+    for it in d["items"]:
+        rel, node, msrc, nsrc, mrev, nrev = want[it["mounted"]["id"]]
+        c.eq(g, f"靶点 {it['ot_id']} 关联行全列对照",
+             {**{k: it["mounted"][k] for k in TARGET_REL_COLS}, "provenance": None},
+             {**rel, "provenance": None})
+        c.eq(g, f"靶点 {it['ot_id']} 节点行全列对照",
+             {**{k: it[k] for k in TARGET_NODE_COLS}, "provenance": None},
+             {**node, "provenance": None})
+        c.eq(g, f"靶点 {it['ot_id']} 两份出处分开（关联行与节点行各有各的源与复核）",
+             (it["mounted"]["provenance"]["source"]["code"], it["provenance"]["source"]["code"],
+              it["mounted"]["provenance"]["review_status"], it["provenance"]["review_status"]),
+             (msrc, nsrc, mrev, nrev))
+        c.eq(g, f"靶点 {it['ot_id']} 关联行的 target_id 指向节点行",
+             it["mounted"]["target_id"], it["id"])
+    _shape_ok(c, g, "节点行没有冒出分数键（分数在关联行上）", d["items"], TARGET_NODE_COLS,
+              ("mounted",))
+    _shape_ok(c, g, "关联行就是 disease_target 那八列",
+              [x["mounted"] for x in d["items"]], TARGET_REL_COLS, ())
+    c.eq(g, "整页都是这一病", {x["mounted"]["disease_id"] for x in d["items"]}, {did})
+    c.eq(g, "一病之内 ot_id 不重复（唯一键保证）",
+         len({x["ot_id"] for x in d["items"]}), len(d["items"]))
+    c.eq(g, "measures.rows = 这一病的关联行数（一个靶点挂几个病是另一件事）",
+         d["measures"]["rows"], len(keys))
+
+
+def _research_drugs(c: Checks, cl: TestClient, db, code: str, did: int, row: dict) -> None:
+    g = f"resD[{code}]"
+    d = cl.get(f"/api/diseases/{code}/drugs").json()
+    _shell_ok(c, g, d, row, "drug", RESEARCH_PAGE_KEYS)
+    # 期望序另问一次 SQL 的 ORDER BY drug_name，不在 Python 里 sorted()：
+    # utf8mb4_0900_ai_ci 把 '.' 排在 '(' 前，码位序相反（resX 里钉着这条实测），
+    # 拿码位序当期望序只会红在无关的地方。逐列内容对照与分面计数仍是两边各算一遍。
+    ordered = _q(db, "SELECT id, drug_name, phase FROM drug WHERE disease_id=%s"
+                     " ORDER BY drug_name", (did,))
+    pg = _page_ok(c, g, d, ordered, 50, 0)
+    _facets_ok(c, g, d, ["phase"])
+    _hit_ok(c, g, db, did, d, "drug_count", True)
+    c.eq(g, "这一页就是药名升序切出来的那一段",
+         [x["drug_name"] for x in d["items"]], [r["drug_name"] for r in ordered[:pg["limit"]]])
+    c.eq(g, "一病之内药名唯一（所以 rows 与去重药名数相等）",
+         (d["measures"]["rows"], d["measures"]["names"]),
+         (len(ordered), len({r["drug_name"] for r in ordered})))
+    fp = {}
+    for r in ordered:
+        fp[r["phase"]] = fp.get(r["phase"], 0) + 1
+    c.eq(g, "phase 分面 = Python 计数", {x["value"]: x["rows"] for x in d["facets"]["phase"]}, fp)
+    top = max(d["facets"]["phase"], key=lambda x: (x["rows"], x["value"]))
+    f = cl.get(f"/api/diseases/{code}/drugs", params={"phase": top["value"]}).json()
+    c.eq(g, f"?phase={top['value']} 的 total_rows 就是分面那个数", f["page"]["total_rows"],
+         fp[top["value"]])
+    c.ok(g, f"?phase={top['value']} 回的行 phase 全是它",
+         all(x["phase"] == top["value"] for x in f["items"]), f"{len(f['items'])} 行")
+    c.eq(g, "筛完度量不变（measures 说的是整维，不是这一页）", f["measures"], d["measures"])
+    c.eq(g, "分面不受过滤影响（选项、顺序与各档行数都不许跟着筛变）",
+         [(x["value"], x["rows"]) for x in f["facets"]["phase"]],
+         [(x["value"], x["rows"]) for x in d["facets"]["phase"]])
+    c.eq(g, "filters 回显：默认未筛、筛过就带出那个值",
+         (d["filters"]["phase"], f["filters"]["phase"]), (None, top["value"]))
+    want = _typed(
+        db, "SELECT dg.drug_name AS __key, dg.id, dg.disease_id, dg.dataset_code, dg.drug_id,"
+            " dg.drug_name, dg.phase, dg.moa, s.code AS __src, dg.review_status AS __rev"
+            " FROM drug dg JOIN source s ON s.id = dg.source_id"
+            " WHERE dg.disease_id=%s ORDER BY dg.drug_name LIMIT 50", (did,),
+        DRUG_COLS, ints=("id", "disease_id"), jsons=("moa",))
+    c.eq(g, "返回那一页在库里都能找到（不漏一行不多一行）", sorted(want),
+         sorted(ordered[i]["drug_name"] for i in range(pg["returned"])))
+    for it in d["items"]:
+        w, src, rev = want[it["drug_name"]]
+        c.eq(g, f"药 {it['drug_name'][:24]} 全列对照",
+             {**{k: it[k] for k in DRUG_COLS}, "provenance": None},
+             {**w, "provenance": None})
+        c.eq(g, f"药 {it['drug_name'][:24]} 出处指向 drug 那一行",
+             (it["provenance"]["source"]["code"], it["provenance"]["review_status"]),
+             (src, rev))
+    _shape_ok(c, g, "行就是 drug 的业务列（没有靶点键）", d["items"], DRUG_COLS, ())
+    c.eq(g, "整页都是这一病", {x["disease_id"] for x in d["items"]}, {did})
+    c.eq(g, "moa 有值的是数组、没值是 NULL 而不是空数组",
+         {type(x["moa"]).__name__ for x in d["items"]} - {type(None).__name__}, {"list"})
+
+
+def _bad(cl: TestClient, path: str) -> tuple[int, str]:
+    """打一条注定要回错误的请求。路由抛出来也算这一条红——白名单一旦被绕过，
+    非法列名会直接进 SQL，而 TestClient 默认把服务端异常再抛一遍，那会带走整跑。"""
+    try:
+        r = cl.get(path)
+        body = r.json()
+        return r.status_code, str(body.get("detail", body))
+    except Exception as e:  # noqa: BLE001
+        return 0, f"{type(e).__name__}: {e}"
+
+
+def _research_edges(c: Checks, cl: TestClient, db, ids: dict) -> None:
+    """分页特有的五件：走完全表、越界、参数上限、过滤值合法性的说法、以及那个"id 序
+    就是源相关度序"的承诺是不是真的。"""
+    did = ids["bladder"]
+    n = int(_col(db, "SELECT COUNT(*) FROM drug WHERE disease_id=%s", (did,)))
+    seen, off = [], 0
+    while True:
+        b = cl.get("/api/diseases/bladder/drugs", params={"limit": 7, "offset": off}).json()
+        if not b["items"]:
+            break
+        seen += [x["drug_name"] for x in b["items"]]
+        c.eq("resX", f"bladder drugs 第 {off // 7 + 1} 页 returned",
+             b["page"]["returned"], min(7, n - off))
+        off += 7
+        if off > n + 7:
+            c.ok("resX", "翻页不会走不完（有 bug 就跳出去）", False, f"{n} 行翻了 {off}")
+            break
+    want = [r["drug_name"] for r in _q(
+        db, "SELECT drug_name FROM drug WHERE disease_id=%s ORDER BY drug_name", (did,))]
+    c.eq("resX", "逐页取完 = 整表且顺序一致（分页不重行、不漏行）", seen, want)
+    c.eq("resX", "页数 = ceil(行数 / limit)", (n + 6) // 7, off // 7)
+    # 接口序是引擎的字典序不是码位序：这两个药名一个以 '.' 开头一个以 '(' 开头，
+    # MySQL 把 '.' 排在前面，Python 的 sorted() 相反。前端若自己 sort() 一遍，
+    # 与接口分页序就对不上，看着就像翻页跳行——所以这条既是路由 conventions 的依据，
+    # 也是 _research_drugs 拿 SQL 取期望序（而不是 sorted）的理由。
+    probe = [".ALPHA.-TOCOPHERYLOXYACETIC ACID", "(R)-PFI-2"]
+    got = [r["drug_name"] for r in _q(
+        db, "SELECT drug_name FROM drug WHERE drug_name IN (%s, %s)"
+            " GROUP BY drug_name ORDER BY drug_name", tuple(probe))]
+    c.eq("resX", "这两个药名库里都在（否则下一条没有对照物）", sorted(got), sorted(probe))
+    c.eq("resX", "引擎序与 Python 码位序相反（分页序不可在前端复现）", got, sorted(probe, reverse=True))
+    # 兜底那一列不是摆设：同分组实测存在，且按 (病, 分数) 数——翻页会撞上的并列发生在同一病的
+    # 一页里；按全库 score 数是另一组数（实测 3,822 组 / 最大 384 行），与接口那句不是一个分母
+    tie = _one(db, "SELECT COUNT(*) AS g, IFNULL(MAX(c), 0) AS mx FROM (SELECT COUNT(*) c"
+                   " FROM disease_target GROUP BY disease_id, score HAVING c > 1) t")
+    c.ok("resX", "同一病内靶点同分组真的存在（所以 score 后面要跟 ot_id）", tie["g"] > 0,
+         f"{tie['g']} 组同分，最大一组 {tie['mx']} 行")
+    for code, p, off2 in (("lung", "trials", 3), ("lung", "publications", 7),
+                          ("breast_female", "targets", 5)):
+        b = cl.get(f"/api/diseases/{code}/{p}", params={"limit": 5, "offset": off2}).json()
+        full = cl.get(f"/api/diseases/{code}/{p}", params={"limit": 50}).json()
+        key = "nct_id" if p == "trials" else ("id" if p == "publications" else None)
+        got = [x["mounted"]["id"] if key is None else x[key] for x in b["items"]]
+        exp = [x["mounted"]["id"] if key is None else x[key]
+               for x in full["items"][off2:off2 + 5]]
+        c.eq("resX", f"{code} {p} offset={off2} = 同一序里切的那五段", got, exp)
+    b = cl.get("/api/diseases/lung/trials", params={"offset": 999999}).json()
+    c.eq("resX", "越界 offset 回空页而不是回整表",
+         (len(b["items"]), b["page"]["returned"], b["page"]["has_more"]), (0, 0, False))
+    c.ok("resX", "越界时 total_rows 仍然如实报整维行数", b["page"]["total_rows"] > 0,
+         str(b["page"]["total_rows"]))
+    for bad, path in (("limit=0", "lung/trials"), ("limit=201", "lung/trials"),
+                      ("offset=-1", "lung/drugs")):
+        code, _ = _bad(cl, f"/api/diseases/{path}?{bad}")
+        c.eq("resX", f"{path}?{bad} 是 422（越界参数不静默夹到边界）", code, 422)
+    for bad in ("phase=NOPE", "status_bucket=completed", "include=bogus"):
+        code, detail = _bad(cl, f"/api/diseases/lung/trials?{bad}")
+        c.eq("resX", f"trials?{bad} 回 404（不是静默空集，也不是把非法值带进 SQL）", code, 404)
+        c.ok("resX", f"trials?{bad} 的错误里列出了可取的值",
+             "可取" in detail or "只接受" in detail, detail[:80])
+    for bad in ("year=1999", "is_oa=1&year=2019"):
+        code, _ = _bad(cl, f"/api/diseases/lung/publications?{bad}")
+        c.eq("resX", f"publications?{bad} 回 404", code, 404)
+    r = cl.get("/api/diseases/lung/trials?include=eligibility,publications")
+    c.eq("resX", "include 两个大字段都回来了", r.status_code, 200)
+    it = r.json()["items"][0]
+    c.ok("resX", "include 之后 eligibility 是解码后的字符串、publications 是数组",
+         isinstance(it.get("eligibility"), str) and isinstance(it.get("publications"), list),
+         f"{type(it.get('eligibility')).__name__}/{type(it.get('publications')).__name__}")
+    # 一个 NCT 挂在多个病上：同一行内容在两台接口必须一字不差（跨病不是复制两份事实）
+    top = _one(db, "SELECT nct_id, COUNT(*) k FROM trial GROUP BY nct_id ORDER BY k DESC, nct_id"
+                   " LIMIT 1")
+    codes = [r["code"] for r in _q(
+        db, "SELECT d.code FROM trial t JOIN disease d ON d.id=t.disease_id"
+            " WHERE t.nct_id=%s ORDER BY d.code", (top["nct_id"],))]
+    got = []
+    for cd in codes[:2]:
+        # 按 nct_id 在这个病内的名次定位，不指望它落在第一页（跨病最多的那个未必字号靠前）
+        rank = int(_col(db, "SELECT COUNT(*) FROM trial WHERE disease_id=%s AND nct_id<%s",
+                        (ids[cd], top["nct_id"])))
+        p = cl.get(f"/api/diseases/{cd}/trials",
+                   params={"limit": 1, "offset": rank}).json()["items"]
+        got.append(p[0] if p else None)
+    c.ok("resX", f"跨病最多的试验 {top['nct_id']}（{top['k']} 病）两台都按名次取得到",
+         all(got), f"{codes[:2]} 的名次定位")
+    if all(got):
+        keys_cmp = ("title", "brief_title", "lead_sponsor", "status_bucket",
+                    "enrollment", "phases", "overall_status")
+        c.eq("resX", f"{top['nct_id']} 在两个病上试验本身的内容一字不差",
+             {k: got[0][k] for k in keys_cmp}, {k: got[1][k] for k in keys_cmp})
+        c.eq("resX", "但两行的 disease_id 不同（一行是一个 (试验, 病) 命中）",
+             (got[0]["disease_id"], got[1]["disease_id"]), (ids[codes[0]], ids[codes[1]]))
+        # matched_terms 不在这份"一字不差"里：它记的是"这一病的哪几个声明词命中了它"，
+        # 同一试验在两个病上必然不同（实测膀胱=bladder cancer / 脑=nervous system cancer）
+        terms = {r["code"]: set(json.loads(r["st"] or "[]"))
+                 for r in _q(db, "SELECT code, search_terms AS st FROM disease"
+                                 " WHERE code IN (%s, %s)", tuple(codes[:2]))}
+        for i, cd in enumerate(codes[:2]):
+            mt = got[i]["matched_terms"]
+            # NULL 是一个合法值（全库 4,872/23,705 行）：那一批只经 CT 的 MeSH 展开命中，
+            # 逐行验过它们的 conditions 与标题里没有一个声明词字面出现，所以不是解析失败。
+            c.ok("resX", f"{cd} 那一行的 matched_terms 是 NULL 或非空数组（两值之外没有第三种）",
+                 mt is None or (isinstance(mt, list) and mt), str(mt)[:80])
+            c.ok("resX", f"{cd} 那一行的 matched_terms 全是它自己声明的词",
+                 set(mt or []) <= terms[cd], str(mt)[:80])
+        c.ok("resX", "matched_terms 随病变（不是把一份词表抄到每个病上）",
+             got[0]["matched_terms"] != got[1]["matched_terms"],
+             f"{got[0]['matched_terms']} vs {got[1]['matched_terms']}")
+    # 文献的 id 序是不是源的相关度序：拿归档逐位对一遍（这条只在有归档时说得成）
+    arc = sorted((ROOT / "data" / "raw" / "europepmc").glob("rows-*/pub-bladder.json.gz"))
+    c.ok("resX", "EPMC 归档在仓库里（这条对照靠它，缺了要红不要跳）", bool(arc), str(arc[:1]))
+    if arc:
+        recs = json.loads(gzip.decompress(arc[-1].read_bytes()).decode("utf-8"))["records"]
+        api = []
+        for o in range(0, 500, 200):
+            api += cl.get("/api/diseases/bladder/publications",
+                          params={"limit": 200, "offset": o}).json()["items"]
+        c.eq("resX", f"整维 {len(api)} 行分三页取完（limit 上限 200，500 行没有一页的路）",
+             len(api), min(len(recs), 500))
+        c.eq("resX", "接口按 id 序取完 = 归档记录序（id 序就是 EPMC 返回的相关度序）",
+             [(str(x["pmid"] or ""), x["doi"]) for x in api],
+             [(str(r.get("pmid") or ""), r.get("doi", "")) for r in recs[:len(api)]])
+
 
 # ---------------------------------------------------------------- 空态
 def check_gaps(c: Checks, cl: TestClient, db) -> None:
@@ -1015,15 +1546,16 @@ def check_edges(c: Checks, cl: TestClient) -> None:
     e = cl.get("/api/diseases/nope")
     c.eq("edges", "未知疾病码 404", e.status_code, 404)
     c.ok("edges", "404 说清了去哪儿找合法值", "/api/diseases" in e.json()["detail"])
-    VOCAB = ("anatomy", "histology", "symptoms", "risk-factors")
+    DIMPATHS = ("anatomy", "histology", "symptoms", "risk-factors",
+                "trials", "publications", "targets", "drugs")
     for path in ("/api/diseases/nope/stats", "/api/diseases/nope/survival",
-                 *[f"/api/diseases/nope/{v}" for v in VOCAB]):
+                 *[f"/api/diseases/nope/{v}" for v in DIMPATHS]):
         r = cl.get(path)
         c.eq("edges", f"{path} 未知疾病码 404 且指路", (r.status_code, "/api/diseases" in r.json()["detail"]), (404, True))
     c.eq("edges", "POST 没有路由可打", cl.post("/api/diseases", json={}).status_code, 405)
     c.eq("edges", "PATCH 同样没有", cl.patch("/api/diseases/lung", json={}).status_code, 405)
     for path in ("/api/diseases/lung/stats", "/api/diseases/lung/survival", "/api/stats/compare",
-                 *[f"/api/diseases/lung/{v}" for v in VOCAB]):
+                 *[f"/api/diseases/lung/{v}" for v in DIMPATHS]):
         c.eq("edges", f"{path} 只读", cl.post(path, json={}).status_code, 405)
     rf = "/api/diseases/lung/risk-factors"
     c.eq("edges", "榜的 limit=0 被拒（0 行不是一种截断）", cl.get(rf, params={"limit": 0}).status_code, 422)
@@ -1058,6 +1590,11 @@ def main() -> int:
         check_compare(c, cl, db)
         check_survival(c, cl, db, ids)
         check_vocab(c, cl, db, ids)
+        check_research(c, cl, db, ids)
+        try:
+            _research_edges(c, cl, db, ids)
+        except Exception as e:  # noqa: BLE001 结果攒到最后才打印，这里不兜住就等于整份报告没了
+            c.ok("resX", "分页边界那一台整台跑完（没抛异常）", False, f"{type(e).__name__}: {e}")
         check_gaps(c, cl, db)
         check_edges(c, cl)
         event.remove(apidb.engine(), "before_cursor_execute", _tap)
@@ -1069,6 +1606,9 @@ def main() -> int:
                      "/api/diseases/lung/anatomy", "/api/diseases/lung/histology",
                      "/api/diseases/lung/symptoms", "/api/diseases/lung/risk-factors",
                      "/api/diseases/breast_female/risk-factors",
+                     "/api/diseases/lung/trials", "/api/diseases/lung/targets?limit=200",
+                     "/api/diseases/bladder/publications?limit=200",
+                     "/api/diseases/breast_female/drugs",
                      "/api/stats/compare?metric=incidence_total&region=China"
                      "&estimate_basis=national_estimate&sex=both&age_band="):
             t = time.perf_counter()

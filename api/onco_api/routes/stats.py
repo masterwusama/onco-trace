@@ -14,11 +14,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import Connection
 
-from .. import gaps as G
 from ..db import get_conn, rows
-from ..dimensions import DIM_BY_KEY, NOT_REJECTED, counts_by_code, identities
+from ..dimensions import DIM_BY_KEY, NOT_REJECTED, identities
 from ..serialize import PROV_COLS, Refs, hydrate, to_series
-from . import get_disease
+from . import get_disease, shell
 
 router = APIRouter(prefix="/api", tags=["stat"])
 
@@ -59,19 +58,12 @@ def disease_stats(
         "ORDER BY metric",
         {"did": dis["id"]},
     )
-    counts = counts_by_code(conn)[code]
-    dim = DIM_BY_KEY["stat"]
+    out = shell(conn, code, dis, "stat", {"year_zero": YEAR_ZERO, "series_key": list(SERIES_HEADER)})
     return {
-        "code": dis["code"],
-        "name_zh": dis["name_zh"],
-        "table": dim.table,
-        "note": dim.note,
-        "conventions": {"year_zero": YEAR_ZERO, "series_key": list(SERIES_HEADER)},
+        **out,
         "series": to_series(refs, series_rows, SERIES_HEADER, POINTS),
         # 研究层那四个数不折序列：每个只有一行，折出来是四条单点线，反而像是有序列
         "counts": [hydrate(refs, "stat_fact", r) for r in count_rows],
-        "measures": counts["stat"],
-        "gaps": [g for g in G.gaps_for_disease(counts, dis) if g["dim"] == "stat"],
     }
 
 
