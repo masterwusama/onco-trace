@@ -119,3 +119,37 @@ def hydrate(refs: Refs, table: str, row: dict) -> dict:
     if prov:
         out["provenance"] = prov
     return out
+
+
+def to_series(
+    refs: Refs,
+    rowset: list[dict],
+    header: tuple[str, ...],
+    points: tuple[str, ...],
+) -> list[dict]:
+    """长表行 → 序列清单：`header` 里的列是这一串的口径，`points` 里的列逐点带出。
+
+    分组键是 header 全列**加上出处五列**。统计层最要紧的错不是少一个数，是把两串
+    不同源的数连成一条线：GCO 的国家级估算与登记处外推、SEER 的观测与拟合，都靠
+    header 里的 `estimate_basis` / `region` / `window_label` 分开；出处进键里则保证
+    一条序列只有一个 `provenance`，而不是"取第一行当代表"。今天的数据里出处不会
+    拆出额外序列（实测 74 条不变），所以这道约束是免费的。
+
+    行序按调用方 SQL 的 ORDER BY 走，序列之间与序列内部的点都保持那个顺序。
+    """
+    out: list[dict] = []
+    index: dict[tuple, dict] = {}
+    for row in rowset:
+        k = tuple(row[c] for c in header + PROV_COLS)
+        g = index.get(k)
+        if g is None:
+            g = index[k] = {
+                **{c: json_safe(row[c]) for c in header},
+                "provenance": refs.provenance(row),
+                "points": [],
+            }
+            out.append(g)
+        g["points"].append({c: json_safe(row[c]) for c in points})
+    for g in out:
+        g["n_points"] = len(g["points"])
+    return out

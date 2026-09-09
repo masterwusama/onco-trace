@@ -10,8 +10,9 @@ from sqlalchemy import Connection
 
 from .. import gaps as G
 from ..db import get_conn, rows
-from ..dimensions import DIMS, counts_by_disease
+from ..dimensions import DIMS, counts_by_code
 from ..serialize import Refs, hydrate
+from . import get_disease
 
 router = APIRouter(prefix="/api", tags=["disease"])
 
@@ -32,19 +33,13 @@ def dim_block(counts: dict[str, dict[str, int]]) -> dict:
     }
 
 
-def _by_code(conn: Connection) -> dict[str, dict]:
-    diseases = rows(conn, "SELECT id, code FROM disease ORDER BY code")
-    counts = counts_by_disease(conn)
-    return {r["code"]: counts[r["id"]] for r in diseases if r["id"] in counts}
-
-
 @router.get("/diseases")
 def list_diseases(
     conn: Connection = Depends(get_conn),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> dict:
-    per_code = _by_code(conn)
+    per_code = counts_by_code(conn)
     items = []
     for raw in rows(
         conn,
@@ -67,11 +62,12 @@ def disease_detail(
     code: str = Path(..., description="disease.code，同时是前端 slug"),
     conn: Connection = Depends(get_conn),
 ) -> dict:
-    raw = rows(conn, "SELECT * FROM disease WHERE code = :code", {"code": code})
-    if not raw:
-        raise HTTPException(404, f"没有这个疾病码：{code}。全部可用值见 /api/diseases")
+    dis = get_disease(conn, code)
+    raw = rows(conn, "SELECT * FROM disease WHERE id = :id", {"id": dis["id"]})
+    if not raw:  # 身份查得到却取不到整行：主档在两查询之间被改了，如实报错
+        raise HTTPException(500, f"{code} 在 disease 里取不到整行，请检查装载是否跑完")
     refs = Refs(conn)
-    counts = counts_by_disease(conn).get(raw[0]["id"])
+    counts = counts_by_code(conn).get(dis["code"])
     if counts is None:  # 主档有这一病但计数没长出来：装载器只写了一半，如实报错而不是回空页
         raise HTTPException(500, f"{code} 在 disease 里有行但没有逐维计数，请检查装载是否跑完")
     out = hydrate(refs, "disease", raw[0])

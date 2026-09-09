@@ -63,8 +63,33 @@ UPDATE 会被服务端直接拒）。三个接口各答一件事：`/api/meta` �
 §二 那六处空态写成度量上的谓词而不是硬编码文案（`paf` 或 `freq_band` 哪天填上，页面就不再说它空着；
 反过来哪个病掉出一批零行，页面也立刻如实说缺），出处的五列在每行收进一个 `provenance` 对象并补上源名、
 许可与上游版本号，响应字段名一律用 DDL 的列名而不另造一套。`python api/tests/run.py` 用 pymysql 把三个
-接口返回的每个数字另问一次对账（外加"DDL 里每个 json 列都在解码表里"这类静态条），530 条断言，
+接口返回的每个数字另问一次对账（外加"DDL 里每个 json 列都在解码表里"这类静态条），这一批 530 条断言，
 单次请求 70–80 ms。
+
+后端第二批（D3b）加三条读接口，统计层与生存率这两维的读侧到此收口。`/api/diseases/{code}/stats`
+把 `stat_fact` 那 16,470 行折成序列：一条线由八列共同定义（`metric` / `unit` / `dataset_code` /
+`region` / `sex` / `age_band` / `estimate_basis` / `cohort_note`），全库 210 条线 16,398 个点；
+`estimate_basis` 是其中最不能省的一列——GCO 的中国国家级估算与登记处外推同病、同度量、同名，只有
+这一列分开两批人。72 行 `query_count` 不折线，单独回在 `counts` 里（每度量只有一行，折出来是 72 条
+单点线，看着像有序列）。`year=0` 不是公元 0 年而是"源没给年份"的哨兵，这句解释随响应回在
+`conventions.year_zero`。`/api/diseases/{code}/survival` 按三层回而不是摊平成一张表：全分期头条 1 个
+数、分期档 4–5 档、逐年序列 93 个点（SEER 8 那套队列，观测线 44 年 + 拟合线 49 年，两条年份重叠但不能相减），
+实测每病 94–99 行；白血病分期档 0 行，是源没有实体瘤分期那一档而不是解析失败。这三层不能用
+`year=0` 切——`survival` 1,762 行没有一行是 0（装载器给全期头条打的是源标的年份窗末年 2022，与逐年
+序列里的 2022 撞在同一个值上）——用的判据是"同一个 (档, 年份窗) 下有几个年份"，这一份判据维度量与
+路由共用。`/api/stats/compare` 是跨病榜：17 个度量、214 个口径切片，四个口径轴没钉死的不替调用方猜——
+只有一个取值的轴自动钉并记进 `auto_pinned`，还剩几个取值的回 `needs` 并把每个可值各自的覆盖病数、行数
+与年份跨度回在 `choices` 里，所以前端照 `needs` 一路点下去就到榜，不必把 214 个组合抄进代码；
+`sex=both` 的中国国家估算只有 13/18 病有行（另五病的源只按性别发），把 `female`/`male` 凑进来是拿两批
+不同的人凑一个率，所以缺的五病列在 `absent` 里而不是零填。
+`python api/tests/run.py` 现在 1,196 条断言：三个新接口仍是两路对照（TestClient 与 pymysql 各问一次），
+榜那一台先在全库断言"五轴加年份钉死后一行一病、只有一个数据集版本"，再让每个度量照自己回的
+`needs`/`choices` 一路选到底、与直查逐病比序比值；生存率的三层这台用 `COUNT(DISTINCT year)` 判、路由用
+`EXISTS (… year <> …)` 判，两种写法今天同解，抄错条件的那一边会红。另加一台看 SQL 文本本身的：碰
+`symptom` / `stat_fact` / `survival` 的每句 SELECT 都必须真的写了 `review_status` 过滤——后两张表今天
+零行 rejected，"过滤了"与"忘了过滤"回一样的数（变异检查实测如此），所以这一条盯语句而不是盯数字，
+唯一的豁免是 `/api/meta` 问"这张表物理上多少行"的那句 `table_rows`（症状维 270 行含 32 条判非留痕，
+两个数各说一件事）。单次请求 37–160 ms。
 
 ```
 18 个恶性肿瘤基准   etl/onco_etl/targets.py
@@ -156,7 +181,7 @@ HP 症状注释各只有约 1% 覆盖，HPO / Orphanet / NCIt 的实测覆盖见
 │ fetch.py     直连→代理三态取数    │  db_ot  │ dimensions.py 十维度量一台聚合     │
 │ raw.py       data/raw 归档+sha256 │         │ gaps.py      空态是度量上的谓词    │
 │ joblog.py    etl_job_log 运行史   │         │ serialize.py 出处五列 → provenance │
-│ probe*       覆盖度探针           │         │ routes/      meta 与疾病两条       │
+│ probe*       覆盖度探针           │         │ routes/      meta/疾病/统计/生存   │
 │ load/        探针解析 → 业务表行  │         └────────────────────────────────────┘
 │ matrix.py    裁定 → 覆盖度文档    │         ┌─ 前端（待建）Vue 3 + Vite ─────────┐
 └───────────────────────────────────┘         └────────────────────────────────────┘
@@ -184,7 +209,7 @@ ops\etl.ps1 probe             # 专项覆盖度探针，不带 --code 就是全�
 ```powershell
 python db/tests/run.py status            # 表行数 + 三道门禁（源授权 / 业务表出处列 / 两份 DDL 一致）
 python etl/tests/run.py                  # 解析回归：仓库内的上游页面 + 构造的最小页，不联网
-python api/tests/run.py                  # 服务层对账：三个接口返回的每个数字另问一次 SQL（要连着库）
+python api/tests/run.py                  # 服务层对账：六个接口返回的每个数字另问一次 SQL（要连着库）
 ops\etl.ps1 load --list                  # 有哪些装载器
 ops\etl.ps1 load --code disease --offline # 把疾病主档从声明 + MONDO 归档装进 disease
 ops\etl.ps1 load --code anatomy --offline # 器官树与组织学：SEER 交叉表 + MONDO 亚部位 → 四张表

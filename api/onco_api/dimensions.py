@@ -25,6 +25,18 @@ from sqlalchemy import Connection
 from .db import rows
 
 DISTINCT = "distinct:"
+NOT_REJECTED = "review_status <> 'rejected'"
+
+# 生存率的三层不能按 `year = 0` 切。stat_fact 用 0 当"不是年度序列"的哨兵，
+# survival 却没有一行是 0（实测 0/1,762）：装载器给全期头条打的是源标的年份窗末年
+# 2022，与 SEER 8 逐年序列里的 2022 撞在同一个值上。真正分开三层的是
+# "同一个 (病, 档, 年份窗) 下有几个年份"——一个的是当期点，多个的是逐年序列。
+# 相关子查询走 uk_survival 的前缀，全表一遍实测 18 ms。
+SAME_WINDOW_OTHER_YEAR = (
+    f"EXISTS (SELECT 1 FROM survival w WHERE w.disease_id = survival.disease_id"
+    f" AND w.stage = survival.stage AND w.window_label = survival.window_label"
+    f" AND w.year <> survival.year AND w.{NOT_REJECTED})"
+)
 
 
 @dataclass(frozen=True)
@@ -52,7 +64,7 @@ DIMS: tuple[Dim, ...] = (
         "这一维是自建展开（basis=via_site_recode），覆盖度矩阵里没有它的逐病格",
     ),
     Dim(
-        "symptom", "症状", "symptom", "review_status <> 'rejected'",
+        "symptom", "症状", "symptom", NOT_REJECTED,
         (("en", "name_lang='en'"), ("zh", "name_lang='zh'"), ("freq", "freq_band IS NOT NULL")),
         "en",
         "按源分行、不做翻译列；freq 为 0 就是「建而不填」那一列的实测",
@@ -69,7 +81,7 @@ DIMS: tuple[Dim, ...] = (
         "genetic 是遗传易感性不是可干预暴露；exposure 有清单无强度；paf 建而不填",
     ),
     Dim(
-        "stat", "发病与死亡统计", "stat_fact", "1=1",
+        "stat", "发病与死亡统计", "stat_fact", NOT_REJECTED,
         (
             ("any", "1=1"),
             ("cn_point", "region='China' AND year=0"),
@@ -84,16 +96,17 @@ DIMS: tuple[Dim, ...] = (
         "五组度量之间不可相减；query_count 是「按声明词命中多少条」，不是流行病学计数",
     ),
     Dim(
-        "survival", "五年存活率", "survival", "1=1",
+        "survival", "五年存活率", "survival", NOT_REJECTED,
         (
             ("any", "1=1"),
             ("stage", "stage_scheme <> 'none'"),
-            ("all_stage_point", "stage_scheme = 'none' AND year = 0"),
-            ("all_stage_series", "stage_scheme = 'none' AND year > 0"),
+            ("all_stage_point", f"stage_scheme = 'none' AND NOT {SAME_WINDOW_OTHER_YEAR}"),
+            ("all_stage_series", f"stage_scheme = 'none' AND {SAME_WINDOW_OTHER_YEAR}"),
             ("observed", "is_observed = 1"),
         ),
         "any",
-        "美国 SEER 口径，页面必须写明不是中国数据；拟合值与观测值分列存",
+        "美国 SEER 口径，页面必须写明不是中国数据；拟合值与观测值分列存；"
+        "三层按 (档, 年份窗) 的跨度分，不按 year=0——这张表每行都是真实年份",
     ),
     Dim(
         "trial", "在招试验", "trial", "1=1",
@@ -171,3 +184,19 @@ def totals(conn: Connection) -> dict[str, dict[str, int]]:
         out[d.key] = {n: int(r[n] or 0) for n, _ in d.measures}
         out[d.key]["table_rows"] = int(r["_rows"] or 0)
     return out
+
+
+_IDENTITY = ("id", "code", "name_zh", "category", "sex")
+
+
+def identities(conn: Connection) -> dict[str, dict]:
+    """病码 → 身份几列。维度页要按同一个 404 口径找病，还要 gaps 规则读的 category。"""
+    cols = ", ".join(_IDENTITY)
+    return {r["code"]: r for r in rows(conn, f"SELECT {cols} FROM disease ORDER BY code")}
+
+
+def counts_by_code(conn: Connection) -> dict[str, dict[str, dict[str, int]]]:
+    """`counts_by_disease` 按病码重排；疾病页与各维度页共用这一份。"""
+    per_id = counts_by_disease(conn)
+    by_code = identities(conn)
+    return {code: per_id[r["id"]] for code, r in by_code.items() if r["id"] in per_id}
