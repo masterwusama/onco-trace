@@ -9,8 +9,11 @@ READ ONLY 在 db.py 里已经兜了一道，这里是第二道。
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .config import load_settings
 from .routes import diseases, meta, research, stats, survival, vocab
@@ -43,4 +46,23 @@ def create_app() -> FastAPI:
     app.include_router(survival.router)
     app.include_router(vocab.router)
     app.include_router(research.router)
+    _mount_frontend(app)
     return app
+
+
+# 站点与接口同台同端口：npm run build 出 frontend/dist 之后这里直接托管，
+# 开发期不走这条路（vite 在 5174 上把 /api 代理过来）。
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+
+def _mount_frontend(app: FastAPI) -> None:
+    """有 dist 就挂上，没有就什么都不做。
+
+    顺序要紧：mount("/") 必须排在所有 /api 路由之后——Starlette 按注册顺序匹配，
+    晚注册的兜底才抢不走接口。前端用的是 hash 路由（`/#/disease/lung`），
+    深链接的第二次请求打到的永远是 `/`，所以不需要为 SPA 补一条 fallback 路由，
+    "只注册 GET" 那道护栏（StaticFiles 也只答 GET/HEAD）不因托管站点而放宽。
+    """
+    if not FRONTEND_DIST.is_dir():
+        return
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")

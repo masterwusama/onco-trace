@@ -18,9 +18,11 @@ ENV_FILE = ROOT / ".env"
 _DB_KEYS = ("DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD")
 _API_KEYS = ("API_HOST", "API_PORT", "API_CORS_ORIGINS")
 
-# 前端 dev server 的默认来源。生产是同源（FastAPI 托管 dist），不需要 CORS，
-# 所以这里只放本机端口，不放通配符——带 credentials 的 `*` 会被浏览器直接拒掉。
-DEFAULT_CORS = "http://localhost:5173,http://127.0.0.1:5173"
+# 前端 dev server 的默认来源（5174 是本站的开发端口，见 frontend/vite.config.js）。
+# 生产是同源（FastAPI 托管 dist），不需要 CORS；日常开发走 vite 的 /api 代理，
+# 浏览器眼里也是同源，这份清单其实用不上——留着只给"直接开 dist 之外的端口"那种情形。
+# 这里只放本机端口，不放通配符：带 credentials 的 `*` 会被浏览器直接拒掉。
+DEFAULT_CORS = "http://localhost:5174,http://127.0.0.1:5174"
 
 
 class ConfigError(RuntimeError):
@@ -87,6 +89,7 @@ def load_settings() -> Settings:
         user=env["DB_USER"],
         password=env["DB_PASSWORD"],
         api_host=env.get("API_HOST") or "127.0.0.1",
-        api_port=_int("API_PORT", "8000"),
+        # 8001 不是随手挑的：本机 8000 长期是另一个项目的端口，默认值指过去等于埋一个抢端口
+        api_port=_int("API_PORT", "8001"),
         cors_origins=origins,
     )

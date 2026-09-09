@@ -1,0 +1,239 @@
+/* onco-trace 前端唯一的全局样式表。
+   配色与 stock-value-analysis 同源（同一位作者的两张读表），换的是内容不是皮肤；
+   尺寸上真正不同的地方都写了原因，其余规则按"屏"分节，组件自己的 class 只在所在节里出现。 */
+
+:root {
+  --bg: #f5f7fa;
+  --card: #ffffff;
+  --line: #e3e8ef;
+  --txt: #2b3441;
+  --sub: #8a94a6;
+  --accent: #2d6cdf;
+  --warn: #d03050;
+  --ok: #18a058;
+  --fit: #b8860b;
+  --page: min(100%, 1560px);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--txt);
+  font: 14px/1.65 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  overflow-x: clip;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: #eef2f8; padding: 0 4px; border-radius: 4px; }
+
+.mono { font-family: ui-monospace, Consolas, monospace; }
+.small { font-size: 12px; }
+.muted { color: var(--sub); }
+.nil { color: var(--sub); }
+.emptyp { color: var(--sub); font-style: italic; }
+
+/* ── 站点头尾 ─────────────────────────────────────────────── */
+.top {
+  display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap;
+  padding: 10px clamp(12px, 2vw, 32px);
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 20;
+}
+.top .brand { font-size: 17px; font-weight: 700; color: var(--txt); letter-spacing: .3px; }
+.meta { display: flex; gap: 16px; flex-wrap: wrap; color: var(--sub); font-size: 12.5px; margin-left: auto; }
+.meta span { white-space: nowrap; }
+.meta-err { color: var(--warn); }
+
+.body { width: var(--page); margin: 0 auto; padding: 16px clamp(10px, 2vw, 32px) 56px; }
+.foot {
+  width: var(--page); margin: 0 auto; padding: 14px clamp(10px, 2vw, 32px) 40px;
+  color: var(--sub); font-size: 12px; border-top: 1px solid var(--line);
+}
+
+.loading { text-align: center; color: var(--sub); padding: 40px 0; }
+.error { color: var(--warn); padding: 18px 0; }
+
+/* ── 表格 ─────────────────────────────────────────────────── */
+table.grid { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--card); }
+table.grid th, table.grid td {
+  padding: 6px 8px; border-bottom: 1px solid var(--line);
+  text-align: left; vertical-align: top;
+}
+table.grid th { color: var(--sub); font-weight: 500; background: #fbfcfe; position: sticky; top: 44px; z-index: 1; }
+table.grid td.n, table.grid th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.grid tbody tr:hover { background: #f4f8ff; }
+table.grid.tight th, table.grid.tight td { padding: 4px 7px; }
+table.grid td.wide { max-width: 420px; white-space: normal; }
+table.grid td.trunc { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── 列表页 ───────────────────────────────────────────────── */
+.bar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.bar input { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; width: 260px; font-size: 14px; }
+.bar-info { color: var(--sub); font-size: 12.5px; }
+.cell-name { white-space: nowrap; }
+.cell-name em { display: block; color: var(--sub); font-style: normal; font-size: 12px; }
+.dims { white-space: normal; }
+.dims-n { display: block; font-variant-numeric: tabular-nums; }
+.dims details, td details { margin-top: 2px; }
+td details summary { cursor: pointer; color: var(--sub); font-size: 12px; }
+td details ul { margin: 4px 0 0; padding-left: 18px; }
+.foot-note { color: var(--sub); font-size: 12px; }
+
+/* ── 详情页：标题 + 十一屏标签 ─────────────────────────────── */
+.head { display: flex; gap: 14px; align-items: flex-end; margin-bottom: 8px; }
+.head .back { color: var(--sub); font-size: 12.5px; white-space: nowrap; }
+.head .title h1 { margin: 0; font-size: 20px; }
+.head .title h1 em { font-style: normal; font-weight: 400; color: var(--sub); font-size: 14px; margin-left: 6px; }
+.ids { color: var(--sub); font-size: 12px; }
+
+.tabs {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  padding: 8px 0; margin-bottom: 12px; border-bottom: 1px solid var(--line);
+  position: sticky; top: 44px; z-index: 10; background: var(--bg);
+}
+.tab {
+  padding: 4px 12px; border: 1px solid var(--line); border-radius: 16px;
+  background: var(--card); color: var(--sub); font-size: 13px; white-space: nowrap;
+}
+.tab em { font-style: normal; color: var(--accent); margin-left: 6px; font-variant-numeric: tabular-nums; }
+.tab.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tab.on em { color: #dbe6ff; }
+.tab-group { color: var(--sub); font-size: 11.5px; margin: 0 2px 0 10px; }
+
+/* ── 面板通用外壳 ─────────────────────────────────────────── */
+.panel, .pane {
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 12px;
+}
+.panel { padding: 12px 14px 14px; }
+.panel-head { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: baseline; margin-bottom: 6px; }
+.panel-head h2, .pane h2 { margin: 0 0 8px; font-size: 15px; }
+.panel-head h2 { margin: 0; }
+.measures { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+.measures i {
+  font-style: normal; background: #eef2f8; color: var(--sub);
+  padding: 1px 8px; border-radius: 4px; font-variant-numeric: tabular-nums;
+}
+.measures b {
+  font-weight: 500; border: 1px solid var(--line); color: var(--txt);
+  padding: 1px 8px; border-radius: 4px; font-variant-numeric: tabular-nums;
+}
+.note { color: var(--sub); font-size: 12.5px; }
+.dimnote { color: var(--sub); font-size: 12.5px; margin: 0 0 10px; }
+.state { color: var(--sub); margin: 4px 0; }
+.state.error { color: var(--warn); }
+.kv { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 6px 0; font-size: 12.5px; color: var(--sub); }
+.kv b { color: var(--txt); font-weight: 500; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.tag { border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; font-size: 12px; background: #fbfcfe; }
+.src-line { color: var(--sub); font-size: 12px; }
+.subhead { font-size: 13px; font-weight: 600; margin: 14px 0 6px; }
+.subhead:first-child { margin-top: 0; }
+
+/* ── 出处角标 ─────────────────────────────────────────────── */
+.prov { font-size: 11.5px; color: var(--sub); white-space: nowrap; }
+.prov a { color: var(--sub); border-bottom: 1px dotted var(--sub); }
+.prov a:hover { color: var(--accent); text-decoration: none; }
+.prov .attr { color: var(--fit); margin-left: 2px; }
+.prov.none { opacity: .6; }
+
+/* ── 空态与口径 ───────────────────────────────────────────── */
+.gap-note {
+  background: #fff8e6; border-left: 3px solid var(--fit); border-radius: 0 6px 6px 0;
+  margin: 8px 0; padding: 6px 10px; font-size: 12.5px;
+}
+.gap-note b { font-weight: 600; }
+.gap-text { display: block; }
+.gap-basis { display: block; color: var(--sub); font-style: normal; font-size: 12px; }
+
+details.conv { margin-top: 10px; font-size: 12.5px; color: var(--sub); }
+details.conv summary { cursor: pointer; }
+details.conv dl { margin: 6px 0 0; display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; }
+details.conv dt { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; color: var(--txt); }
+details.conv dd { margin: 0; }
+
+/* ── 研究层：分面、分页、行展开 ───────────────────────────── */
+.hit { font-size: 12.5px; color: var(--sub); margin: 0 0 10px; }
+.hit b { color: var(--txt); font-variant-numeric: tabular-nums; }
+.hit em { font-style: normal; }
+.facets { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 10px; }
+.facet { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.facet select { padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); }
+.facet-hint { color: var(--sub); font-size: 11.5px; }
+td.ext { width: 26px; }
+td.rowbtn { width: 62px; }
+tr.open { background: #f4f8ff; }
+tr.detail td { background: #fbfcfe; }
+tr.detail dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; font-size: 12px; }
+tr.detail dt { color: var(--sub); font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
+tr.detail dd { margin: 0; word-break: break-word; }
+/* 嵌套列按缩进 1 空格摊开成 JSON，换行必须保住，否则又退回成一整行。 */
+tr.detail dd.json { white-space: pre-wrap; }
+.empty { color: var(--sub); font-style: italic; }
+
+.pager { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 10px; color: var(--sub); flex-wrap: wrap; }
+.pager button { padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); cursor: pointer; }
+.pager button:disabled { opacity: 40%; cursor: default; }
+.pager-pos { margin-right: auto; font-size: 12.5px; }
+.pager-pos em { font-style: normal; color: var(--warn); }
+.pager-size select { padding: 2px 4px; border: 1px solid var(--line); border-radius: 5px; }
+
+/* ── 统计层 / 生存率：图与序列表 ──────────────────────────── */
+.metric-block { border-top: 1px dashed var(--line); padding-top: 10px; margin-top: 14px; }
+.metric-block:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+.metric-title { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-size: 13.5px; font-weight: 600; }
+.metric-title span { font-weight: 400; color: var(--sub); font-size: 12px; }
+.chart { width: 100%; height: 260px; margin: 6px 0 4px; }
+.chart.tall { height: 320px; }
+.baseline { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.card-num {
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; background: #fbfcfe; min-width: 132px;
+}
+.card-num .v { font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.card-num .k { color: var(--sub); font-size: 12px; }
+.card-num .u { color: var(--sub); font-size: 11.5px; }
+.headline { display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap; }
+.headline .big { font-size: 40px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.headline .big i { font-size: 16px; font-weight: 400; font-style: normal; color: var(--sub); margin-left: 4px; }
+.headline .meta-lines { color: var(--sub); font-size: 12.5px; }
+.headline .meta-lines b { color: var(--txt); font-weight: 500; }
+.badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #eef2f8; color: var(--sub); white-space: nowrap; }
+.badge.obs { background: #e7f5ec; color: var(--ok); }
+.badge.fit { background: #fdf3e0; color: var(--fit); }
+.badge.lang { background: #e9f0fb; color: var(--accent); }
+.legend-note { color: var(--sub); font-size: 12px; margin: 0 0 8px; }
+.legend-note b { color: var(--fit); font-weight: 500; }
+
+/* ── 词表维：器官 / 组织学 / 症状 / 危险因素 ──────────────── */
+.node {
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: #fbfcfe;
+}
+.node .label { font-size: 14px; font-weight: 600; }
+.node .label em { font-style: normal; font-weight: 400; color: var(--sub); margin-left: 6px; font-size: 12px; }
+.node .codes { color: var(--sub); font-size: 12px; }
+.node .mount { margin-top: 4px; font-size: 12px; }
+.node .two-prov { margin-top: 4px; display: flex; gap: 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--sub); }
+tr.clickable { cursor: pointer; }
+tr.clickable.on { background: #eef4ff; }
+.drill { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+.drill-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; font-size: 12.5px; margin-bottom: 6px; }
+.drill-head b { font-size: 14px; }
+.block { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+.block-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 4px; }
+.block-head h3 { margin: 0; font-size: 14px; }
+.block-head .h { color: var(--sub); font-size: 12px; }
+.block .nci { color: var(--sub); font-size: 12px; margin: 0 0 6px; }
+
+@media (max-width: 600px) {
+  input, select, textarea { font-size: 16px; }
+  .top { position: static; }
+  .tabs { position: static; }
+  table.grid th { position: static; }
+  .body, .foot { padding-left: 10px; padding-right: 10px; }
+  table.grid td.wide { max-width: 260px; }
+  .headline .big { font-size: 30px; }
+}

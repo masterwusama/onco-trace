@@ -7,7 +7,7 @@
 数据全部来自公开源抓取，仓库里没有人工录入模块。每个数字都带来源、口径与查阅时间；
 本站不做诊断，症状反查输出的是参考排序。
 
-## 当前进度：装载六批按维收口，后端四批十四条读接口已落库对账
+## 当前进度：装载六批按维收口，后端四批十四条读接口 + 前端十一屏可看
 
 P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"，两个产出都已在仓库里：
 [docs/数据源覆盖度.md](docs/数据源覆盖度.md)（13 列 × 16 份裁定，由
@@ -158,12 +158,27 @@ conditions 与标题，0 行出现过本病声明的任何一个词（每病 26�
 单次请求 155–179 ms，且从一页 50 行到一页 200 行只涨一点点——大头仍是每请求那 10 条维度聚合，
 四台的行查询本身很轻。
 
+前端第一批（D4a）起 `frontend/`：两个视图、十一屏（概览 + 十条维度各一屏），读的就是上面那十四条
+接口，界面不自己算一个数。生产不另占端口——`ops\web.ps1 build` 出 `dist/` 之后 `ops\api.ps1 serve`
+在同一台端口上托管站点与接口，本来就是同源；路由用 hash 而不是 history，为的是不给深链接补
+fallback、从而不动"只注册 GET"那道护栏。这一层做的事其实只有一件：接口已经说清的口径原样显示出来。
+空值显示「—」不显示 0，空态用响应 `gaps` 里那一句而不是前端再判一遍（判据在度量上，只该有一处）；
+`year=0` 那三类单点（国家级估算、年龄组构成、查询计数）只显数值不折线；生存率的拟合段与观测段在图上
+分开并标出「观测止于 2018」；榜一律按接口给的序显示，前端不 `.sort()`——库的序是 MySQL
+`utf8mb4_0900_ai_ci` 的序，JS 默认按码点，两者在这批数据上会分岔，排一次就把接口自述序那句话说假了；
+症状按源分块显示，不合表也不翻译。四条研究维共用一台表格组件、逐维给配置，`eligibility` 与
+`publications` 两段重文本默认不发、要点名 `?include=`。这一批新钉两样在跑测器里：一道路径契约
+（见文末第 5 条），和一条"每个分面轴都得是那个接口可请求的参数名"。断言因此从 15,789 条到
+15,849 条、整跑 56 s；实点 lung / breast_female / thyroid 三个病逐屏（稠密、稀疏、整维空态各占
+一类），单次请求 140–164 ms，控制台无报错、无 404 接口。
+
 ```
 18 个恶性肿瘤基准   etl/onco_etl/targets.py
 21 个候选源登记     etl/onco_etl/sources.py   →  MySQL db_ot.source
 可达性探针          ops\etl.ps1 probe-reach   →  MySQL db_ot.source_probe_log
 专项覆盖度探针      ops\etl.ps1 probe         →  MySQL db_ot.source_probe_log
-后端只读接口        ops\api.ps1 serve         →  http://127.0.0.1:8000/api/*
+后端只读接口        ops\api.ps1 serve         →  http://127.0.0.1:8001/api/*
+前端站点            ops\web.ps1 build         →  同一个 8001 端口的 /
 ```
 
 21 个源全部可达（直连为主；托管在 GitHub release 上的 OBO 词表与 Wikidata 要经代理，
@@ -250,8 +265,14 @@ HP 症状注释各只有约 1% 覆盖，HPO / Orphanet / NCIt 的实测覆盖见
 │ joblog.py    etl_job_log 运行史   │         │ serialize.py 出处五列 → provenance │
 │ probe*       覆盖度探针           │         │ routes/ 六模块十四条 GET           │
 │ load/        探针解析 → 业务表行  │         └────────────────────────────────────┘
-│ matrix.py    裁定 → 覆盖度文档    │         ┌─ 前端（待建）Vue 3 + Vite ─────────┐
-└───────────────────────────────────┘         └────────────────────────────────────┘
+│ matrix.py    裁定 → 覆盖度文档    │         ┌─ 前端 frontend/ ───────────────────┐
+└───────────────────────────────────┘         │ views/   两屏：疾病列表 + 逐病详情 │
+                                              │ panels/  一屏一面板，研究层共用一台│
+                                              │ lib/chart.js  echarts 公共配置     │
+                                              │ api/client.js 只发 GET + 路径白名单│
+                                              │ build → dist/ 后端同台托管一端口   │
+                                              │ dev 5174      /api 代理到 8001     │
+                                              └────────────────────────────────────┘
 ```
 
 五层数据模型：词表层（器官树/症状/危险因素）→ 实体层（疾病主档）→ 关系层（多对多，带 role）→
@@ -276,7 +297,7 @@ ops\etl.ps1 probe             # 专项覆盖度探针，不带 --code 就是全�
 ```powershell
 python db/tests/run.py status            # 表行数 + 三道门禁（源授权 / 业务表出处列 / 两份 DDL 一致）
 python etl/tests/run.py                  # 解析回归：仓库内的上游页面 + 构造的最小页，不联网
-python api/tests/run.py                  # 服务层对账：十四条接口返回的每个数字另问一次 SQL（要连着库）
+python api/tests/run.py                  # 服务层对账：十四条接口返回的每个数字另问一次 SQL，外加一道路径契约（前端用到的 ⊆ 登记清单 ⊆ 真注册的路由，要连着库）
 ops\etl.ps1 load --list                  # 有哪些装载器
 ops\etl.ps1 load --code disease --offline # 把疾病主档从声明 + MONDO 归档装进 disease
 ops\etl.ps1 load --code anatomy --offline # 器官树与组织学：SEER 交叉表 + MONDO 亚部位 → 四张表
@@ -293,6 +314,8 @@ ops\etl.ps1 probe-status                 # 每源每份数据集最近一次裁�
 ops\etl.ps1 status                       # 库现状速览
 ops\api.ps1 routes                       # 服务层注册了哪几条路径与参数（建 app 但不碰库）
 ops\api.ps1 serve                        # 起只读后端，监听 .env 的 API_HOST:API_PORT，文档在 /api/docs
+ops\web.ps1 dev                          # 前端开发服务器 http://127.0.0.1:5174，/api 代理到 127.0.0.1:8001（后端要另起）
+ops\web.ps1 build                        # 前端出 frontend/dist/；之后 ops\api.ps1 serve 同台托管，站点就在 /
 ```
 
 探针跑完用 `cd etl && python -m onco_etl matrix` 重新生成 `docs/数据源覆盖度.md`——
@@ -306,11 +329,12 @@ ops\api.ps1 serve                        # 起只读后端，监听 .env 的 API
 | `etl/` | `onco_etl` 采集层，`python -m onco_etl` 运行；`probes/` 是覆盖度探针（只写裁定），`load/` 是装载器（复用探针里那份解析写业务表），`--offline` 重放读本机 `data/raw/` 归档 |
 | `etl/tests/` | 解析回归：`fixtures/` 存代表页的上游原样字节，`run.py` 先比 sha256 再断言解析结果 |
 | `api/` | `onco_api` 服务层，`python -m onco_api serve` 运行；只读（会话级 READ ONLY + 只注册 GET），`dimensions.py` 一台聚合十个维度量、`gaps.py` 把空态写成度量上的谓词；`tests/run.py` 拿真库把响应里的每个数字与 SQL 直查对账 |
+| `frontend/` | `src/` 界面层，Vue 3 + Vite，两个视图十一屏、一个 `client.js` 只发 GET；`ops\web.ps1 build` 出的 `dist/` 由服务层在同一个端口托管。跑法与界面上的那几条约定见 [frontend/README.md](frontend/README.md) |
 | `docs/` | `数据源探针计划.md`（判据与逐批实测）、`数据源覆盖度.md`（脚本生成，勿手改）、`MVP裁定.md`（P0 出口：建哪些表） |
 | `data/` | `raw/` 原始响应归档、`exports/` 待抽查草稿，都不入库不提交 |
 | `ops/` | PowerShell 包装脚本 |
 
-## 四条约定
+## 六条约定
 
 1. `etl/` 与后端互不引用，只通过 MySQL 表结构对话。`db/schema.sql` 是唯一契约，`migrations/` 只把
    已有库前进到它的同一终态（业务表段两边同内容，`status` 逐字比对），两侧都不生成 schema。
@@ -321,3 +345,10 @@ ops\api.ps1 serve                        # 起只读后端，监听 .env 的 API
    本机是 UTC+8，带 `Z` 的串会被 MySQL 按字面量存成 UTC 时刻，跨午夜的采样会错位一天。
 4. 每个落库的事实都必须能回溯到来源：`source_id` + `extract_method` + `review_status`。
    `source.legal_note` 为空的源不许进采集。
+5. 接口与页面三向钉死，跑在 `api/tests/run.py` 里：前端源码里出现的每个后端路径字面量都要在
+   `frontend/src/api/client.js` 的清单上，清单上每条都要是真注册的路由，注册了却还没画屏的接口
+   要在 `BACKEND_ONLY` 写明理由。`facets` 的轴名必须就是那个接口可请求的参数名——对不上等于
+   一排点不动的选项，筛子看着在、其实什么都没筛。
+6. 本机端口：后端 8001、前端开发 5174、生产站点仍是 8001（`ops\web.ps1` 那两行）。8000 与 5173
+   是同一台机器上另一个项目占着的，换端口要同时改 `.env` 的 `API_PORT` 与
+   `frontend/vite.config.js` 的代理目标。

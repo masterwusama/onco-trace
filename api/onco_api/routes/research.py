@@ -242,7 +242,7 @@ def disease_publications(
     return {
         **out,
         "filters": {"year": year, "is_oa": is_oa},
-        "facets": {"pub_year": years, "is_oa": oas},
+        "facets": {"year": years, "is_oa": oas},
         "page": page,
         "items": [hydrate(refs, "publication", r) for r in got],
     }

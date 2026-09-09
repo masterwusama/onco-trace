@@ -19,6 +19,9 @@
 回整表）；分面按未过滤的整维算，所以"筛一次之后的 total_rows"必须正好等于分面那个数，
 而筛完选项集合不许缩水；`page.total_rows` 与 `source_hit.value` 各说一件事，文献那一台
 18/18 病必须不相等（每病截在 500 行而源命中上万）。
+D4a 起了前端，于是多一道路径契约：frontend/src 里出现的每一个后端路径字面量都必须在
+`client.js` 那份清单上，清单上每一条都必须是真注册过的路由，而注册了却还没画屏的那几条
+（`BACKEND_ONLY`）要写明理由——三个方向都钉，接口与页面才不会各说各话。
 只有三样东西是写死的：18 个疾病码（P0 基准，漂了就说明有人改了 targets.py）、
 docs/MVP裁定.md §二 那几处空态落在哪些病上（裁定本身，不是数据），
 以及各维分组应当互斥且覆盖全表这一结构性事实。词表四维另外钉两样：JOIN 出来的响应行该有哪些
@@ -70,6 +73,11 @@ SERIES_KEY = ("metric", "unit", "dataset_code", "region", "sex", "age_band",
               "estimate_basis", "cohort_note")
 # 榜要钉死的四轴（metric 由调用方给，year 单独选）
 AXES = ("region", "estimate_basis", "sex", "age_band")
+# 站点源码在仓库同级的 frontend/src；接口路径契约由 check_frontend 守
+FRONTEND_SRC = ROOT / "frontend" / "src"
+# 后端注册了、前端还没画屏的接口：加一维而不给屏，就得在这里写下一行理由，
+# 否则那道门禁会红——它要的是"没人对着页面核对过的接口"不存在，不是"两边条数相等"。
+BACKEND_ONLY = {"/api/stats/compare": "跨病榜：钉口径那套选择器还没画（D4b 的第一屏）"}
 # 生存率的"串"与路由换一种写法判：同 (病, 档, 年份窗) 里distinct 年份多于一个
 SURV_SERIES = ("(SELECT COUNT(DISTINCT w.year) FROM survival w "
                "WHERE w.disease_id=survival.disease_id AND w.stage=survival.stage "
@@ -144,7 +152,7 @@ def check_guard(c: Checks) -> None:
 
 
 # ---------------------------------------------------------------- 路由清单
-def check_routes(c: Checks) -> None:
+def check_routes(c: Checks) -> set[str]:
     paths = set(create_app().openapi()["paths"])
     c.eq("routes", "D3a+D3b+D3c+D3d 注册的十四条 API 路径", paths,
          {"/api/meta", "/api/diseases", "/api/diseases/{code}",
@@ -169,6 +177,50 @@ def check_routes(c: Checks) -> None:
             table = None
     c.eq("routes", "schema.sql 里每个 json 列都在解码表里",
          {k: sorted(v) for k, v in want.items()}, {k: sorted(v) for k, v in JSON_COLS.items()})
+    return paths
+
+
+def check_frontend(c: Checks, paths: set[str]) -> None:
+    """前端 ↔ 后端的路径契约：页面敢打的接口，与后端真注册的接口，两边对得上。
+
+    三个方向都要钉：前端写了后端没有的路径是一次 404；后端加了路径而没人写屏，
+    是接口在无人核对的情况下上线；而面板绕过 `client.js` 直接 fetch 一条新路径，
+    等于把这份清单变成装饰品——所以第三项看的不是清单，是源码里出现过的字面量。
+    """
+    src = FRONTEND_SRC
+    if not src.is_dir():
+        c.ok("web", "frontend/src 在（不在就是门禁静默放过）", False, f"找不到 {src}")
+        return
+
+    client_js = (src / "api" / "client.js").read_text(encoding="utf-8")
+    m = re.search(r"export const API_PATHS = \[(.*?)\]", client_js, re.S)
+    c.ok("web", "client.js 里 API_PATHS 那份清单读得出来", m is not None)
+    listed = re.findall(r"'([^']+)'", m.group(1)) if m else []
+    c.ok("web", "清单非空", bool(listed), f"{len(listed)} 条")
+
+    unknown = [p for p in listed if "/api" + p not in paths]
+    c.ok("web", "清单里每一条都是后端真注册的路径", not unknown, f"多余：{unknown}")
+    c.eq("web", "清单自身不重复", sorted(set(listed)), sorted(listed))
+
+    # 字面量扫描：只认像后端路径的那几种开头（'/disease/' 是前端路由，不算）
+    used: set[str] = set()
+    strays: list[str] = []
+    for f in sorted(src.rglob("*")):
+        if f.suffix not in (".js", ".vue") or not f.is_file():
+            continue
+        for lit in re.findall(r"['`](/(?:api|diseases|stats|meta)[^'`]*)['`]",
+                              f.read_text(encoding="utf-8")):
+            if lit == "/api":  # client.js 拼接用的前缀，不是一条路径
+                continue
+            used.add(lit)
+            if lit not in listed:
+                strays.append(f"{f.relative_to(src).as_posix()}:{lit}")
+    c.ok("web", "源码里每个后端路径字面量都在清单上（没有绕过 client.js 的调用）",
+         not strays, f"绕过清单：{sorted(set(strays))}")
+
+    unreferenced = {p for p in paths if not any(p == "/api" + u for u in used)}
+    c.eq("web", "后端注册了而前端还没画屏的接口，正是写好了理由的那几条",
+         unreferenced, set(BACKEND_ONLY))
 
 
 # ------------------------------------------------- API 实际发给 MySQL 的语句
@@ -1048,6 +1100,11 @@ def _facets_ok(c: Checks, g: str, d: dict, axes: list[str]) -> None:
     这个病这一维数出来的，没有哪一行是它的出处。
     """
     c.eq(g, "facets 就回这些轴", sorted(d["facets"]), sorted(axes))
+    # 分面轴的名字就是客户端要发的那个参数名。对不上等于一排点不动的选项：前端按参数名
+    # 过白名单，认不出的键被直接丢掉——筛子看着在，其实什么都没筛。
+    c.ok(g, "每一个分面轴都是 filters 回显的那个参数（分面键必须可请求）",
+         set(axes) <= set(d["filters"]),
+         f"分面 {sorted(axes)} 不在 filters {sorted(d['filters'])} 里")
     c.eq(g, "每个分面项只有 value 与 rows（聚合层不许挂出处）",
          {tuple(sorted(f)) for k in axes for f in d["facets"][k]}, {("rows", "value")})
     c.ok(g, "分面每档行数都是正整数（0 行的档不该占一个选项）",
@@ -1160,7 +1217,7 @@ def _research_publications(c: Checks, cl: TestClient, db, code: str, did: int, r
               (did,))
     ordered = sorted(keys, key=lambda r: int(r["id"]))      # 装载序＝EPMC 相关度序
     pg = _page_ok(c, g, d, ordered, 50, 0)
-    _facets_ok(c, g, d, ["pub_year", "is_oa"])
+    _facets_ok(c, g, d, ["year", "is_oa"])
     _hit_ok(c, g, db, did, d, "publication_count", False)
     c.eq(g, "每病固定 500 行（上限样本，与命中数不等）", d["measures"]["rows"], 500)
     c.ok(g, "命中数严格大于落库行数（这一维没取满）",
@@ -1174,14 +1231,14 @@ def _research_publications(c: Checks, cl: TestClient, db, code: str, did: int, r
     for r in keys:
         yrs[r["pub_year"]] = yrs.get(r["pub_year"], 0) + 1
         oas[r["is_oa"]] = oas.get(r["is_oa"], 0) + 1
-    c.eq(g, "pub_year 分面 = Python 计数",
-         {x["value"]: x["rows"] for x in d["facets"]["pub_year"]}, yrs)
+    c.eq(g, "year 分面（数的是 pub_year 列）= Python 计数",
+         {x["value"]: x["rows"] for x in d["facets"]["year"]}, yrs)
     c.eq(g, "is_oa 分面 = Python 计数（0 与 1 两档，没有 NULL 档）",
          {x["value"]: x["rows"] for x in d["facets"]["is_oa"]}, oas)
     c.eq(g, "is_oa=1 的分面数与 oa 度量同一份", oas.get(1, 0), d["measures"]["oa"])
     c.eq(g, "in_epmc 度量 = 这一病 in_epmc=1 的行数（独立另问一次）",
          d["measures"]["in_epmc"], sum(1 for r in keys if r["in_epmc"] == 1))
-    top_year = max(d["facets"]["pub_year"], key=lambda x: (x["rows"], x["value"]))
+    top_year = max(d["facets"]["year"], key=lambda x: (x["rows"], x["value"]))
     fy = cl.get(f"/api/diseases/{code}/publications",
                 params={"year": top_year["value"], "limit": 200}).json()
     c.eq(g, f"?year={top_year['value']} 的 total_rows 就是分面那个数",
@@ -1194,8 +1251,8 @@ def _research_publications(c: Checks, cl: TestClient, db, code: str, did: int, r
          all(x["is_oa"] == 1 for x in fo["items"]), f"{len(fo['items'])} 行")
     for fd in (fy, fo):
         c.eq(g, "两个轴的分面都不跟着筛变",
-             {k: [(x["value"], x["rows"]) for x in fd["facets"][k]] for k in ("pub_year", "is_oa")},
-             {k: [(x["value"], x["rows"]) for x in d["facets"][k]] for k in ("pub_year", "is_oa")})
+             {k: [(x["value"], x["rows"]) for x in fd["facets"][k]] for k in ("year", "is_oa")},
+             {k: [(x["value"], x["rows"]) for x in d["facets"][k]] for k in ("year", "is_oa")})
     c.eq(g, "未请求时 filters 回显两个轴都是未设", fy["filters"]["is_oa"], None)
     c.eq(g, "筛过的轴在 filters 里回显出来",
          (fy["filters"]["year"], fo["filters"]["is_oa"]), (top_year["value"], 1))
@@ -1583,7 +1640,11 @@ def main() -> int:
             seen.append(statement)
 
         event.listen(apidb.engine(), "before_cursor_execute", _tap)
-        check_routes(c)
+        paths = check_routes(c)
+        try:
+            check_frontend(c, paths)
+        except Exception as e:  # noqa: BLE001 它只读文件；抛出来也不该带走下面那份报告
+            c.ok("web", "前端契约那一台整台跑完（没抛异常）", False, f"{type(e).__name__}: {e}")
         check_meta(c, cl, db)
         check_diseases(c, cl, db)
         check_stats(c, cl, db, ids)
