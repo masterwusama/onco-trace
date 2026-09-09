@@ -75,10 +75,13 @@ DIMS: tuple[Dim, ...] = (
             ("any", "1=1"),
             ("genetic", "role='genetic'"),
             ("exposure", "role='exposure'"),
+            ("genetic_loci", DISTINCT + "IF(role='genetic',risk_factor_id,NULL)"),
+            ("exposure_nodes", DISTINCT + "IF(role='exposure',risk_factor_id,NULL)"),
             ("paf", "paf IS NOT NULL"),
         ),
         "any",
-        "genetic 是遗传易感性不是可干预暴露；exposure 有清单无强度；paf 建而不填",
+        "genetic 是遗传易感性不是可干预暴露，且一行是一个关联（研究 × 位点）不是一个位点："
+        "实测最多一病 2,151 行只对应 1,061 个位点；exposure 有清单无强度；paf 建而不填",
     ),
     Dim(
         "stat", "发病与死亡统计", "stat_fact", NOT_REJECTED,

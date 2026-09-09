@@ -192,7 +192,7 @@ assoc 17,064 / lit 724,160 / drugs 1,036）。代价如实记在 `targets.py`：
 3. 建而不填的列等于页面上的空态：`symptom.freq_band`、`disease_risk_factor.paf` / `paf_basis`、
    `anatomy_node.label_zh`、`risk_factor.label_zh`。装载器不写它们，前端按 §二 的约定显示。
 
-这四条在只读的那一侧（D3a 起的 `api/onco_api/`）各有各的落点，页面不必自己再去对账：
+这几条在只读的那一侧（D3a 起的 `api/onco_api/`）各有各的落点，页面不必自己再去对账：
 
 1. 出处五列不摊在业务字段旁边：`serialize.py` 把它们收进每行一个 `provenance` 对象，顺带补上
    `source` 的名称、许可、主页与 `dataset_release` 的上游版本号——"这个数哪来的"在响应里一次说全，
@@ -214,6 +214,21 @@ assoc 17,064 / lit 724,160 / drugs 1,036）。代价如实记在 `targets.py`：
    "没有归因强度"、`freq_band == 0` 才报"频率带空缺"。装载器哪天填上，接口就不再说它空着；
    反过来哪个病新掉出一批零行，页面也立刻如实说缺。`anatomy_node.label_zh` 与 `risk_factor.label_zh`
    是全站同一件事，走 `/api/meta` 的 `gaps` 而不是逐病回十八遍。
+5. 词表四维（D3c）一行是一个词不是一个数，所以四台都不折线、不求和，而各带回两份出处：
+   `disease_anatomy` / `disease_histology` / `disease_risk_factor` 这些关系行与它们指向的节点行
+   各有一套出处五列（连 `id`、`code`、`review_status` 都同名），只挂一份就等于把"挂载依据"与
+   "节点本身"其中一个说成没有来源。聚合层反过来不带出处——`/api/diseases/{code}/histology`
+   默认的组档行是从 3,111 条挂载数出来的，不是一行事实，冒充一份出处就是冒充一行事实。
+6. 一个三位组码可以带两个组名：`histology_code` 里 172 个组码对 173 个组名（804 同时是
+   SMALL CELL CARCINOMA, NOS 与 NON-SMALL CELL CARCINOMA, NOS，854、897 同），所以组档只按组码聚，
+   每档回 `label_variants` 说明这一档有几个写法、`group_label` 只是其中一个；按 (组码, 组名) 聚
+   会把一档拆成两档，那几个 DISTINCT 数在两边各算一遍就是重计。同样不补库里没有的结构：
+   `anatomy_node` 没有 parent 列，亚部位的挂载依据是本病声明的 ICD-9 档而不是某个 site recode 的
+   下级，所以 primary 与 subsite 两档分开平铺、不相加，页面要层级得另找一份真有层级的源。
+7. 榜与计数不混：genetic 一行是一条关联（研究 × 位点 × p 值）不是一个位点，实测最多一病 2,151 行
+   只对应 1,061 个位点、99 次研究录入，所以 `/api/diseases/{code}/risk-factors` 把行数、去重度点数
+   与研究号数三个数一起回，并按 `-log10(p)` 降序在 `limit` 处截断且自述 `truncated`
+   （默认 100，18 病里 9 病会被截）——页面拿到的榜是"前 N"，不是"这一病的全部"。
 
 "这一病有没有这一维的数"也不给总分：`/api/diseases` 每行带十维度量明细与各自的 `available`，
 所以"症状 12 条 + 靶点 3,000 条"不会被读成同一个东西的两个档。

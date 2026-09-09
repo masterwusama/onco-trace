@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import load_settings
-from .routes import diseases, meta, stats, survival
+from .routes import diseases, meta, stats, survival, vocab
 
 DESCRIPTION = (
     "癌症与高致死疾病的结构化数据站后端。所有数值随行带出处"
@@ -41,4 +41,5 @@ def create_app() -> FastAPI:
     app.include_router(diseases.router)
     app.include_router(stats.router)
     app.include_router(survival.router)
+    app.include_router(vocab.router)
     return app

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""服务层跑测器：拿真库把六个接口的每个数字对账一遍。
+"""服务层跑测器：拿真库把十条接口的每个数字对账一遍。
 
     python api/tests/run.py        # 退出码非 0 即有 FAIL（不需要 pytest）
 
@@ -16,7 +16,8 @@
 聚合"与"前端能不能不问人就把口径选完"都不是文档里的承诺，是跑出来的。
 只有三样东西是写死的：18 个疾病码（P0 基准，漂了就说明有人改了 targets.py）、
 docs/MVP裁定.md §二 那几处空态落在哪些病上（裁定本身，不是数据），
-以及各维分组应当互斥且覆盖全表这一结构性事实。
+以及各维分组应当互斥且覆盖全表这一结构性事实。词表四维另外钉两样：JOIN 出来的响应行该有哪些
+键（多一个 parent / children 就是把库里没有的层级说成有），以及遗传关联榜的截断规则。
 """
 from __future__ import annotations
 
@@ -139,10 +140,12 @@ def check_guard(c: Checks) -> None:
 # ---------------------------------------------------------------- 路由清单
 def check_routes(c: Checks) -> None:
     paths = set(create_app().openapi()["paths"])
-    c.eq("routes", "D3a+D3b 注册的六条 API 路径", paths,
+    c.eq("routes", "D3a+D3b+D3c 注册的十条 API 路径", paths,
          {"/api/meta", "/api/diseases", "/api/diseases/{code}",
           "/api/diseases/{code}/stats", "/api/diseases/{code}/survival",
-          "/api/stats/compare"})
+          "/api/stats/compare",
+          "/api/diseases/{code}/anatomy", "/api/diseases/{code}/histology",
+          "/api/diseases/{code}/symptoms", "/api/diseases/{code}/risk-factors"})
 
     # 解码表按 db/schema.sql 数，不靠人记：漏一列，那一列就以 "[…]" 字符串回到前端
     from onco_api.serialize import JSON_COLS
@@ -214,6 +217,10 @@ def check_meta(c: Checks, cl: TestClient, db) -> None:
                     "FROM symptom WHERE review_status<>'rejected'"),
         ("risk", "SELECT COUNT(*) AS `any`, SUM(role='genetic') AS `genetic`, "
                  "SUM(role='exposure') AS `exposure`, SUM(paf IS NOT NULL) AS `paf`, "
+                 "(SELECT COUNT(DISTINCT risk_factor_id) FROM disease_risk_factor"
+                 " WHERE role='genetic') AS `genetic_loci`, "
+                 "(SELECT COUNT(DISTINCT risk_factor_id) FROM disease_risk_factor"
+                 " WHERE role='exposure') AS `exposure_nodes`, "
                  "COUNT(*) AS `rows` FROM disease_risk_factor"),
         ("stat", "SELECT COUNT(*) AS `any`, SUM(region='China' AND year=0) AS `cn_point`, "
                  "SUM(region='China' AND year>0) AS `cn_trend`, "
@@ -329,6 +336,12 @@ def _check_measures(c: Checks, code: str, dims: dict, did: int, db) -> None:
         "risk": {"any": _sid(db, did, "disease_risk_factor", "1=1"),
                  "genetic": _sid(db, did, "disease_risk_factor", "role='genetic'"),
                  "exposure": _sid(db, did, "disease_risk_factor", "role='exposure'"),
+                 "genetic_loci": int(_col(
+                     db, "SELECT COUNT(DISTINCT risk_factor_id) FROM disease_risk_factor"
+                         " WHERE disease_id=%s AND role='genetic'", (did,))),
+                 "exposure_nodes": int(_col(
+                     db, "SELECT COUNT(DISTINCT risk_factor_id) FROM disease_risk_factor"
+                         " WHERE disease_id=%s AND role='exposure'", (did,))),
                  "paf": _sid(db, did, "disease_risk_factor", "paf IS NOT NULL")},
         "stat": {"any": _sid(db, did, "stat_fact", NR),
                  "cn_point": _sid(db, did, "stat_fact", f"region='China' AND year=0 AND {NR}"),
@@ -372,6 +385,11 @@ def _check_measures(c: Checks, code: str, dims: dict, did: int, db) -> None:
          _sid(db, did, "symptom", "review_status<>'rejected'"))
     c.eq(f"list[{code}]", "危险因素两层覆盖全表",
          want["risk"]["genetic"] + want["risk"]["exposure"], want["risk"]["any"])
+    r = want["risk"]
+    c.ok(f"list[{code}]", "去重度量不超过行数（distinct 取错列就会倒挂）",
+         r["genetic_loci"] <= r["genetic"] and r["exposure_nodes"] <= r["exposure"],
+         f"genetic {r['genetic_loci']} 个位点 / {r['genetic']} 行，"
+         f"exposure {r['exposure_nodes']} 个节点 / {r['exposure']} 行")
 
 
 def _sid(db, did: int, table: str, cond: str) -> int:
@@ -606,6 +624,332 @@ def check_survival(c: Checks, cl: TestClient, db, ids: dict) -> None:
              bool(d["gaps"]) and any("分期" in x["text"] for x in d["gaps"]), m["stage"] == 0)
 
 
+# ---------------------------------------------------------------- 词表四维
+# 四台的共同形状：一行是一个词而不是一个数，所以都不折序列，每条带两份出处
+# （关系行一份、节点行一份）。断言按同一个路子写：响应那边是路由的 SQL，
+# 这边用 pymysql 另问一遍、并在 Python 里把聚合重做，两边写法刻意不同。
+# 三张表（disease_anatomy / disease_histology / disease_risk_factor）的维度基线是 1=1
+# 而不是非 rejected：装载器对这三张表没有「判非」那一步，读侧凭空加一道过滤
+# 就会把库里没有的口径编出来，所以这里也照 1=1 比。
+_SHELL_KEYS = ["code", "conventions", "gaps", "measures", "name_zh", "note", "table"]
+ANAT_NODE_COLS = ("id", "kind", "code", "label", "label_zh", "icdo3_range", "icd9")
+ANAT_MOUNT_COLS = ("id", "role", "basis", "matched_codes")
+HIST_CODE_COLS = ("id", "code", "behavior", "code_behavior", "label", "group_code", "group_label")
+HIST_MOUNT_COLS = ("id", "via_recode", "basis")
+SYMPTOM_COLS = ("id", "name", "name_lang", "heading", "source_url", "anchor", "extract_kind",
+                "page_lastmod", "freq_band",
+                "derive_marker")  # DDL 里那列就叫 provenance，换名带出才不被出处对象盖掉
+RISK_ASSOC_COLS = ("id", "role", "uri_tier", "trait_label", "trait_uri", "snps", "risk_allele",
+                   "chr_id", "chr_pos", "risk_allele_freq", "p_value_text", "pvalue_mlog",
+                   "or_beta", "effect_kind", "ci95_text", "pubmedid", "study_accession",
+                   "initial_sample", "replication_sample", "paf", "paf_basis")
+RISK_NODE_COLS = ("id", "kind", "label", "label_zh")
+VOCAB_TABLES = {"anatomy": "disease_anatomy", "histology": "disease_histology",
+                "symptom": "symptom", "risk": "disease_risk_factor"}
+
+
+def _shell_ok(c: Checks, g: str, d: dict, row: dict, dim: str, extra: list[str]) -> None:
+    """四台共用的头部：身份、注册表带出的表名与口径、与列表页同一份度量和空态。"""
+    c.eq(g, "响应块齐", sorted(d), sorted([*_SHELL_KEYS, *extra]))
+    c.eq(g, "table 就是这一维注册的那张表", d["table"], VOCAB_TABLES[dim])
+    c.eq(g, "note 与列表页那一维同一句", d["note"], row["dims"][dim]["note"])
+    c.eq(g, "measures 与列表页同一份", d["measures"], row["dims"][dim]["measures"])
+    c.eq(g, "gaps 只收这一维、与列表页同一条", d["gaps"],
+         [x for x in row["gaps"] if x["dim"] == dim])
+    c.ok(g, "conventions 每条都给了页面一句话",
+         bool(d["conventions"]) and all(len(v) > 20 for v in d["conventions"].values()),
+         f"{sorted(d['conventions'])}")
+
+
+def _shape_ok(c: Checks, g: str, what: str, items: list, cols: tuple, joined: tuple) -> None:
+    """行的键集合只许是「DDL 里那几列 + provenance + 那一份 JOIN 出来的另一张表」。
+
+    钉的是键而不是值：读侧凭空多出一个 parent / children / score 键，就等于把库里
+    没有的层级或分数说成有。
+    """
+    if not items:
+        return
+    c.eq(g, what, {tuple(sorted(set(x) - set(joined) - {"provenance"})) for x in items},
+         {tuple(sorted(cols))})
+
+
+def check_vocab(c: Checks, cl: TestClient, db, ids: dict) -> None:
+    per_code = {i["code"]: i for i in cl.get("/api/diseases").json()["items"]}
+    # 判非的症状条目全库 32 条：任何一台把它们带进响应都是把「已排除」说成「有」
+    rejected = {r["id"] for r in _q(db, f"SELECT id FROM symptom WHERE NOT ({NR})")}
+    marked = int(_col(db, "SELECT COUNT(*) FROM symptom WHERE provenance<>''"))
+    for code in CODES:
+        did = ids[code]
+        # 形状一变（少一列、多一个键、接口 500）不该把整台跑测带走：这一病这一维记成红，
+        # 其余 71 台继续跑完。变异检查里五条改坏原本只留下一个 traceback，
+        # 后面两千条断言一条没跑，报告上看不出红在哪一维。
+        for g, fn, extra in (("anat", _vocab_anatomy, ()), ("hist", _vocab_histology, ()),
+                             ("symp", _vocab_symptoms, (rejected,)), ("risk", _vocab_risk, ())):
+            try:
+                fn(c, cl, db, code, did, per_code[code], *extra)
+            except Exception as e:  # noqa: BLE001 跑测器宁可红一片，也不许悄悄少跑一段
+                c.ok(g, f"{code} 这一维的对账整台跑完（没抛异常）", False,
+                     f"{type(e).__name__}: {e}")
+    c.eq("vocab", "全库没有一行用过 symptom.provenance 那一列（derive_marker 只是留空位）",
+         marked, 0)
+
+
+def _vocab_anatomy(c: Checks, cl: TestClient, db, code: str, did: int, row: dict) -> None:
+    g = f"anat[{code}]"
+    d = cl.get(f"/api/diseases/{code}/anatomy").json()
+    _shell_ok(c, g, d, row, "anatomy", ["primary", "subsite"])
+    # 一份挂载行 + 一份节点行各有各的出处，所以两边各自的 source/review 都要单独对上
+    want = {int(r["mid"]): r for r in _q(
+        db, "SELECT m.id mid, n.id nid, m.role, m.basis, m.matched_codes, n.code ncode,"
+            " n.kind, n.label, n.icd9, n.icdo3_range, ms.code msrc, ns.code nsrc,"
+            " m.review_status mrev, n.review_status nrev"
+            " FROM disease_anatomy m JOIN anatomy_node n ON n.id=m.anatomy_node_id"
+            " JOIN source ms ON ms.id=m.source_id JOIN source ns ON ns.id=n.source_id"
+            " WHERE m.disease_id=%s", (did,))}
+    got = {}
+    for tier in ("primary", "subsite"):
+        for x in d[tier]:
+            m = x["mounted"]
+            got[int(m["id"])] = (
+                tier, int(x["id"]), x["kind"], x["label"], m["role"], m["basis"],
+                m["matched_codes"], x["code"], m["provenance"]["source"]["code"],
+                x["provenance"]["source"]["code"], m["provenance"]["review_status"],
+                x["provenance"]["review_status"])
+    c.eq(g, "响应行集合 = 该病的挂载行（一台不多一台不少）", sorted(got), sorted(want))
+    for mid, v in got.items():
+        w = want.get(mid)
+        if w is not None:
+            c.eq(g, f"挂载行 {mid} 逐列对照（含两档归位与两份出处）", v,
+                 (w["role"], int(w["nid"]), str(w["kind"]), str(w["label"]), str(w["role"]),
+                  str(w["basis"]), str(w["matched_codes"]), str(w["ncode"]), str(w["msrc"]),
+                  str(w["nsrc"]), str(w["mrev"]), str(w["nrev"])))
+    c.eq(g, "primary 与 subsite 的节点互斥（同一个节点不挂两档）",
+         sorted({int(x["id"]) for x in d["primary"]} & {int(x["id"]) for x in d["subsite"]}), [])
+    for tier in ("primary", "subsite"):
+        c.eq(g, f"{tier} 条数跟着度量走", len(d[tier]), d["measures"][tier])
+        seq = [(x["kind"], x["label"]) for x in d[tier]]
+        c.eq(g, f"{tier} 内按 kind 再 label 排", seq, sorted(seq))
+    _shape_ok(c, g, "节点行没有冒出层级键（库里没有父子边）",
+              [*d["primary"], *d["subsite"]], ANAT_NODE_COLS, ("mounted",))
+    _shape_ok(c, g, "挂载行就是那四列加出处",
+              [x["mounted"] for t in ("primary", "subsite") for x in d[t]],
+              ANAT_MOUNT_COLS, ())
+    c.eq(g, "器官中文名整列为空（与 /api/meta 那条整维空态同一件事）",
+         {x["label_zh"] for t in ("primary", "subsite") for x in d[t]}, {None})
+
+
+def _vocab_histology(c: Checks, cl: TestClient, db, code: str, did: int, row: dict) -> None:
+    g = f"hist[{code}]"
+    d = cl.get(f"/api/diseases/{code}/histology").json()
+    _shell_ok(c, g, d, row, "histology", ["groups", "n_groups"])
+    # 聚合在 Python 里重做一遍：路由那一句用的是 SQL 的 COUNT(DISTINCT …)
+    agg: dict[str, dict] = {}
+    for r in _q(db, "SELECT h.group_code gc, h.group_label gl, d.via_recode vr,"
+                    " d.dataset_release_id mrel, h.dataset_release_id hrel, d.basis"
+                    " FROM disease_histology d JOIN histology_code h ON h.id=d.histology_code_id"
+                    " WHERE d.disease_id=%s", (did,)):
+        a = agg.setdefault(str(r["gc"]), {"c": 0, "gl": set(), "vr": set(),
+                                          "mr": set(), "hr": set(), "b": set()})
+        a["c"] += 1
+        a["gl"].add(r["gl"])
+        a["vr"].add(r["vr"])
+        a["mr"].add(r["mrel"])
+        a["hr"].add(r["hrel"])
+        a["b"].add(r["basis"])
+    want = {gc: (a["c"], len(a["gl"]), len(a["vr"]), len(a["mr"]), len(a["hr"]), len(a["b"]))
+            for gc, a in agg.items()}
+    got = {str(x["group_code"]): (x["codes"], x["label_variants"], x["via_recodes"],
+                                  x["mount_releases"], x["code_releases"], x["bases"])
+           for x in d["groups"]}
+    c.eq(g, "组档六列与 Python 侧重算一致（含档集合本身）", got, want)
+    c.eq(g, "n_groups = groups 长度", d["n_groups"], len(d["groups"]))
+    c.eq(g, "各档 codes 相加 = codes 度量（一档不落、也不重计）",
+         sum(x["codes"] for x in d["groups"]), d["measures"]["codes"])
+    c.eq(g, "组码升序回", [str(x["group_code"]) for x in d["groups"]], sorted(want))
+    c.eq(g, "没有一档的出处列混进聚合层",
+         {k for x in d["groups"] for k in x if "provenance" in k or k == "source_id"}, set())
+    multi = [gc for gc, a in agg.items() if len(a["gl"]) > 1]
+    samples = list(dict.fromkeys([*([d["groups"][0]["group_code"], d["groups"][-1]["group_code"]]
+                                    if d["groups"] else []), *multi[:2]]))
+    for gc in samples:
+        r = cl.get(f"/api/diseases/{code}/histology", params={"group": str(gc)}).json()
+        c.eq(g, f"?group={gc} 状态 200", r.get("group"), str(gc))
+        c.eq(g, f"?group={gc} 码行数与档上 codes 一致", r["n_codes"], got[str(gc)][0])
+        wset = sorted(str(x["cb"]) for x in _q(
+            db, "SELECT h.code_behavior cb FROM disease_histology d"
+                " JOIN histology_code h ON h.id=d.histology_code_id"
+                " WHERE d.disease_id=%s AND h.group_code=%s", (did, str(gc))))
+        c.eq(g, f"?group={gc} 码行集合与直查一致",
+             sorted(str(x["code_behavior"]) for x in r["codes"]), wset)
+        c.ok(g, f"?group={gc} 每行两份出处（码表一份、逐病展开一份）",
+             all(x.get("provenance") and x["mounted"].get("provenance") for x in r["codes"]),
+             f"{r['n_codes']} 行")
+        _shape_ok(c, g, f"?group={gc} 码行就是 histology_code 那几列",
+                  r["codes"], HIST_CODE_COLS, ("mounted",))
+        _shape_ok(c, g, f"?group={gc} 展开行就是 disease_histology 那三列",
+                  [x["mounted"] for x in r["codes"]], HIST_MOUNT_COLS, ())
+        c.eq(g, f"?group={gc} 只回这一档",
+             {str(x["group_code"]) for x in r["codes"]}, {str(gc)})
+        if str(gc) in multi:  # 一档两个组名：两个名字都必须在码行上，不能被 MIN() 藏掉
+            c.eq(g, f"?group={gc} 的组名变体都在行上",
+                 {x["group_label"] for x in r["codes"]}, agg[str(gc)]["gl"])
+    # 404 有两种要分开钉：码表里有、这一病没有的组码（这一条才抓得住「忘了按病筛」），
+    # 和形态上就不可能存在的组码。999 是真实存在的三位组码，用它只会撞对。
+    other = _q(db, "SELECT h.group_code gc FROM histology_code h"
+                   " WHERE h.group_code NOT IN ("
+                   "  SELECT h2.group_code FROM disease_histology d2"
+                   "  JOIN histology_code h2 ON h2.id=d2.histology_code_id"
+                   "  WHERE d2.disease_id=%s) GROUP BY h.group_code ORDER BY h.group_code"
+                   " LIMIT 1", (did,))
+    for gc, why in ((str(other[0]["gc"]), "别病有这一档"), ("99z", "不可能的写法")):
+        e = cl.get(f"/api/diseases/{code}/histology", params={"group": gc})
+        c.eq(g, f"这一病没有的组码 {gc} 404 且报出本病档数（{why}）",
+             (e.status_code, f"{d['n_groups']} 档" in e.json().get("detail", "")), (404, True))
+
+
+def _vocab_symptoms(c: Checks, cl: TestClient, db, code: str, did: int, row: dict,
+                    rejected: set) -> None:
+    g = f"symp[{code}]"
+    d = cl.get(f"/api/diseases/{code}/symptoms").json()
+    _shell_ok(c, g, d, row, "symptom", ["sources", "n_sources"])
+    dbrows = _q(db, "SELECT s.id, s.name_lang, s.review_status, s.extract_method,"
+                    " src.code scode"
+                    " FROM symptom s JOIN source src ON src.id=s.source_id"
+                    " WHERE s.disease_id=%s", (did,))
+    # 非 rejected 在 Python 里筛：路由把条件写进 WHERE，这里换一个写法判同一件事
+    keep = {int(r["id"]) for r in dbrows if str(r["review_status"]) != "rejected"}
+    got = {int(x["id"]) for b in d["sources"] for x in b["items"]}
+    c.eq(g, "响应条目 = 该病非 rejected 症状行（判非的不进、好行不落）", got, keep)
+    c.eq(g, "库里这一病的判非行数与 /api/meta 的留痕同一件事",
+         len(dbrows) - len(keep), len([r for r in dbrows if int(r["id"]) in rejected]))
+    c.eq(g, "同一条症状只出现在一块（跨块不重计）",
+         sum(b["n_items"] for b in d["sources"]), len(got))
+    c.eq(g, "n_sources = 块数", d["n_sources"], len(d["sources"]))
+    c.eq(g, "块数 = 该病症状实际涉及几个源",
+         d["n_sources"], len({r["scode"] for r in dbrows if int(r["id"]) in keep}))
+    c.eq(g, "判非条目一个都没混进来", sorted(got & rejected), [])
+    per_src: dict[str, list] = {}
+    for r in dbrows:
+        if int(r["id"]) in keep:
+            per_src.setdefault(str(r["scode"]), []).append(r)
+    for b in d["sources"]:
+        sc = str(b["source"]["code"])
+        want = per_src.get(sc, [])
+        c.eq(g, f"源 {sc} 条数与直查一致", b["n_items"], len(want))
+        c.eq(g, f"源 {sc} 一块只有一种语言（块按源分，语言不能混进同一块）",
+             {x["name_lang"] for x in b["items"]}, {b["name_lang"]})
+        c.eq(g, f"源 {sc} 每条的出处就写着这个源",
+             {x["provenance"]["source"]["code"] for x in b["items"]}, {sc})
+        c.eq(g, f"源 {sc} 的块头 dataset 与块内条目同一个版本",
+             {(x.get("provenance") or {}).get("dataset", {}).get("code")
+              for x in b["items"] if (x.get("provenance") or {}).get("dataset")},
+             {(b.get("dataset") or {}).get("code")} if b.get("dataset") else set())
+        c.eq(g, f"源 {sc} 的抽取方式与直查一致",
+             {x["provenance"]["extract_method"] for x in b["items"]},
+             {str(r["extract_method"]) for r in want})
+        c.ok(g, f"源 {sc} 的 dataset 块头与条目同源（不张冠李戴）",
+             all(x["provenance"].get("dataset", {}).get("source_code") == sc
+                 for x in b["items"] if x["provenance"].get("dataset")))
+    c.eq(g, "en+zh 两块度量与响应分布一致",
+         (sum(1 for x in per_src.values() for r in x if r["name_lang"] == "en"),
+          sum(1 for x in per_src.values() for r in x if r["name_lang"] == "zh")),
+         (d["measures"]["en"], d["measures"]["zh"]))
+    c.eq(g, "频率带整列为空（§二.3 建而不填，页面按空态显示）",
+         {x["freq_band"] for b in d["sources"] for x in b["items"]}, {None})
+    _shape_ok(c, g, "症状行键集合就是 DDL 那几列", [x for b in d["sources"] for x in b["items"]],
+              SYMPTOM_COLS, ())
+    c.eq(g, "库里那列 provenance 换名带出、不被出处对象盖掉",
+         {str(x.get("derive_marker", "<缺键>")) for b in d["sources"] for x in b["items"]}, {""})
+
+
+def _vocab_risk(c: Checks, cl: TestClient, db, code: str, did: int, row: dict) -> None:
+    g = f"risk[{code}]"
+    d = cl.get(f"/api/diseases/{code}/risk-factors").json()
+    _shell_ok(c, g, d, row, "risk", ["limit", "genetic", "exposure"])
+    dbrows = _q(db, "SELECT d.id, d.role, d.uri_tier, d.risk_factor_id rf, d.study_accession,"
+                    " d.dataset_release_id, d.paf, d.pvalue_mlog, d.trait_label,"
+                    " d.trait_uri, d.snps, d.effect_kind, a.kind fkind, a.label flabel,"
+                    " fs.code fsrc, ds.code dsrc, a.review_status frev, d.review_status drev"
+                    " FROM disease_risk_factor d JOIN risk_factor a ON a.id=d.risk_factor_id"
+                    " JOIN source fs ON fs.id=a.source_id JOIN source ds ON ds.id=d.source_id"
+                    " WHERE d.disease_id=%s", (did,))
+    gen = [r for r in dbrows if r["role"] == "genetic"]
+    exp = [r for r in dbrows if r["role"] == "exposure"]
+    tiers: dict = {}
+    for r in gen:
+        t = tiers.setdefault(str(r["uri_tier"]), {"n": 0, "loci": set(), "st": set(), "rel": set()})
+        t["n"] += 1
+        t["loci"].add(int(r["rf"]))
+        t["st"].add(r["study_accession"])
+        t["rel"].add(r["dataset_release_id"])
+    c.eq(g, "tiers 与 Python 侧分组一致（档集合本身也在内）",
+         {str(t["uri_tier"]): (t["rows_"], t["loci"], t["studies"], t["releases"])
+          for t in d["genetic"]["tiers"]},
+         {k: (v["n"], len(v["loci"]), len(v["st"]), len(v["rel"])) for k, v in tiers.items()})
+    total = int(d["genetic"]["total_rows"])
+    c.eq(g, "各档 rows_ 相加 = total_rows = genetic 度量",
+         (sum(t["rows_"] for t in d["genetic"]["tiers"]), total, d["measures"]["genetic"]),
+         (total, len(gen), len(gen)))
+    c.eq(g, "去重度点数与直查的 COUNT(DISTINCT) 一致", d["measures"]["genetic_loci"],
+         len({int(r["rf"]) for r in gen}))
+    c.eq(g, "exposure 节点去重度量与直查一致", d["measures"]["exposure_nodes"],
+         len({int(r["rf"]) for r in exp}))
+    lim = int(d["limit"])
+    c.eq(g, "returned = items 长度", d["genetic"]["returned"], len(d["genetic"]["items"]))
+    c.eq(g, "returned = min(limit, total_rows)", d["genetic"]["returned"], min(lim, total))
+    c.eq(g, "truncated 只在真的截了时才真", d["genetic"]["truncated"], total > d["genetic"]["returned"])
+    got = {int(x["id"]): x for x in d["genetic"]["items"]}
+    c.eq(g, "榜内每一条都是这一病的 genetic 行",
+         sorted(set(got) - {int(r["id"]) for r in gen}), [])
+    wmap = {int(r["id"]): r for r in dbrows}
+    for i, x in got.items():
+        w = wmap[i]
+        c.eq(g, f"关联行 {i} 的因子就是直查那一行的节点",
+             (int(x["factor"]["id"]), x["factor"]["kind"], x["factor"]["label"],
+              x["factor"]["provenance"]["source"]["code"],
+              x["provenance"]["source"]["code"], x["factor"]["provenance"]["review_status"],
+              x["provenance"]["review_status"], x["trait_label"], x["snps"], x["effect_kind"]),
+             (int(w["rf"]), str(w["fkind"]), str(w["flabel"]), str(w["fsrc"]), str(w["dsrc"]),
+              str(w["frev"]), str(w["drev"]), str(w["trait_label"]), str(w["snps"]),
+              str(w["effect_kind"])))
+    pl = [float(x["pvalue_mlog"]) for x in d["genetic"]["items"]]
+    c.eq(g, "榜内 pvalue 单调不增", pl, sorted(pl, reverse=True))
+    if d["genetic"]["truncated"]:
+        # 落榜的第一名（同一排序下的第 returned+1 行）不得强于在榜的最后一名：
+        # 截断只可能截掉尾巴，不可能把 p=1e-300 留在门外
+        nxt = _q(db, "SELECT pvalue_mlog m FROM disease_risk_factor"
+                     " WHERE disease_id=%s AND role='genetic'"
+                     " ORDER BY pvalue_mlog DESC LIMIT 1 OFFSET %s", (did, len(pl)))
+        c.ok(g, "截断没把好结果留在门后（落榜最高分不高于在榜最低分）",
+             float(nxt[0]["m"]) <= pl[-1], f"榜尾 {pl[-1]}，门后 {float(nxt[0]['m'])}")
+    ex = {int(x["id"]): x for x in d["exposure"]["items"]}
+    c.eq(g, "exposure 全量回且不截断",
+         (d["exposure"]["returned"], len(ex), d["measures"]["exposure"]),
+         (len(exp), len(exp), len(exp)))
+    c.eq(g, "两层行集合不相交（一行不会既进榜又进清单）", sorted(set(got) & set(ex)), [])
+    c.eq(g, "榜里每条 role=genetic 且节点是位点（不靠 label 猜层）",
+         {(x["role"], x["factor"]["kind"]) for x in d["genetic"]["items"]},
+         {("genetic", "genetic_locus")} if gen else set())
+    c.eq(g, "清单里每条 role=exposure 且节点是暴露",
+         {(x["role"], x["factor"]["kind"]) for x in d["exposure"]["items"]},
+         {("exposure", "exposure")} if exp else set())
+    c.eq(g, "两层的节点 id 互斥（同一个节点不同时是位点和暴露）",
+         len({int(x["factor"]["id"]) for x in d["genetic"]["items"]}
+             & {int(x["factor"]["id"]) for x in d["exposure"]["items"]}), 0)
+    c.eq(g, "paf 一列在榜与清单上都空（§二.2 整维级的坑）",
+         {x["paf"] for x in [*d["genetic"]["items"], *d["exposure"]["items"]]}, {None})
+    _shape_ok(c, g, "关联行没有冒出归因分数键",
+              [*d["genetic"]["items"], *d["exposure"]["items"]], RISK_ASSOC_COLS, ("factor",))
+    _shape_ok(c, g, "节点行就是 risk_factor 那四列",
+              [x["factor"] for x in [*d["genetic"]["items"], *d["exposure"]["items"]]],
+              RISK_NODE_COLS, ())
+    r5 = cl.get(f"/api/diseases/{code}/risk-factors", params={"limit": 5}).json()
+    c.eq(g, "limit=5 只收窄榜、不改度量与清单",
+         (r5["genetic"]["returned"], r5["measures"], r5["exposure"]["returned"]),
+         (min(5, total), d["measures"], d["exposure"]["returned"]))
+
+
+
 # ---------------------------------------------------------------- 空态
 def check_gaps(c: Checks, cl: TestClient, db) -> None:
     per_code = {i["code"]: i for i in cl.get("/api/diseases").json()["items"]}
@@ -671,18 +1015,21 @@ def check_edges(c: Checks, cl: TestClient) -> None:
     e = cl.get("/api/diseases/nope")
     c.eq("edges", "未知疾病码 404", e.status_code, 404)
     c.ok("edges", "404 说清了去哪儿找合法值", "/api/diseases" in e.json()["detail"])
-    for path in ("/api/diseases/nope/stats", "/api/diseases/nope/survival"):
+    VOCAB = ("anatomy", "histology", "symptoms", "risk-factors")
+    for path in ("/api/diseases/nope/stats", "/api/diseases/nope/survival",
+                 *[f"/api/diseases/nope/{v}" for v in VOCAB]):
         r = cl.get(path)
         c.eq("edges", f"{path} 未知疾病码 404 且指路", (r.status_code, "/api/diseases" in r.json()["detail"]), (404, True))
     c.eq("edges", "POST 没有路由可打", cl.post("/api/diseases", json={}).status_code, 405)
     c.eq("edges", "PATCH 同样没有", cl.patch("/api/diseases/lung", json={}).status_code, 405)
-    for path in ("/api/diseases/lung/stats", "/api/diseases/lung/survival", "/api/stats/compare"):
+    for path in ("/api/diseases/lung/stats", "/api/diseases/lung/survival", "/api/stats/compare",
+                 *[f"/api/diseases/lung/{v}" for v in VOCAB]):
         c.eq("edges", f"{path} 只读", cl.post(path, json={}).status_code, 405)
-
-
-GROUPS = (("guard", check_guard), ("routes", check_routes), ("meta", check_meta),
-          ("diseases", check_diseases), ("stats", check_stats), ("compare", check_compare),
-          ("survival", check_survival), ("gaps", check_gaps), ("edges", check_edges))
+    rf = "/api/diseases/lung/risk-factors"
+    c.eq("edges", "榜的 limit=0 被拒（0 行不是一种截断）", cl.get(rf, params={"limit": 0}).status_code, 422)
+    c.eq("edges", "榜的 limit 超上限被拒", cl.get(rf, params={"limit": 501}).status_code, 422)
+    c.eq("edges", "榜的 limit 上限本身可取", cl.get(rf, params={"limit": 500}).status_code, 200)
+    c.eq("edges", "榜的 limit 非数字被拒", cl.get(rf, params={"limit": "abc"}).status_code, 422)
 
 
 def main() -> int:
@@ -710,6 +1057,7 @@ def main() -> int:
         check_stats(c, cl, db, ids)
         check_compare(c, cl, db)
         check_survival(c, cl, db, ids)
+        check_vocab(c, cl, db, ids)
         check_gaps(c, cl, db)
         check_edges(c, cl)
         event.remove(apidb.engine(), "before_cursor_execute", _tap)
@@ -718,11 +1066,18 @@ def main() -> int:
         # 逐请求耗时只报不判：机器之间差一个数量级，写死会天天红
         for path in ("/api/meta", "/api/diseases", "/api/diseases/lung",
                      "/api/diseases/lung/stats", "/api/diseases/lung/survival",
+                     "/api/diseases/lung/anatomy", "/api/diseases/lung/histology",
+                     "/api/diseases/lung/symptoms", "/api/diseases/lung/risk-factors",
+                     "/api/diseases/breast_female/risk-factors",
                      "/api/stats/compare?metric=incidence_total&region=China"
                      "&estimate_basis=national_estimate&sex=both&age_band="):
             t = time.perf_counter()
-            cl.get(path)
-            print(f"耗时  {path[:56]:56} {(time.perf_counter() - t) * 1000:7.1f} ms")
+            try:
+                cl.get(path)
+                took = f"{(time.perf_counter() - t) * 1000:7.1f} ms"
+            except Exception as e:  # noqa: BLE001 这一段不判定；它抛出来不该带走上面那份 FAIL 报告
+                took = f"!! {type(e).__name__}"
+            print(f"耗时  {path[:56]:56} {took}")
 
     fails = 0
     for group, what, ok, note in c.items:

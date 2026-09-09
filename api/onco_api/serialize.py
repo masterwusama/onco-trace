@@ -21,6 +21,22 @@ from .db import rows
 
 PROV_COLS = ("source_id", "dataset_release_id", "extract_method", "review_status", "loaded_at")
 
+
+def cols(alias: str, names: tuple[str, ...]) -> str:
+    """SELECT 片段：这些列按 `<alias>_<列名>` 回。
+
+    关系表与节点表各带一套出处五列（`id`、`code`、`review_status` 也都同名），JOIN 一行
+    里两份事实各有各的出处；挑一份当"这一行的出处"就是把另一份的依据丢掉。
+    """
+    return ", ".join(f"{alias}.`{c}` AS `{alias}_{c}`" for c in names)
+
+
+def aliased(row: dict, alias: str) -> dict:
+    """把 `<alias>_*` 还原成原名，交给 hydrate 按那一张表的出处与 JSON 列处理。"""
+    p = f"{alias}_"
+    return {k[len(p):]: v for k, v in row.items() if k.startswith(p)}
+
+
 # 表 → 该表里以 JSON 存的列。pymysql 把 JSON 列当文本回，所以出参前必须解码；
 # 列清单对着 db/schema.sql 数：漏一列就是前端收到一个形如 "[…]" 的字符串。
 JSON_COLS: dict[str, tuple[str, ...]] = {
