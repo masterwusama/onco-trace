@@ -26,6 +26,10 @@ from .. import db, joblog, releases
 from ..clock import now_ts
 from ..probes.result import source_id as _source_id
 
+# 一条 INSERT 语句带多少行。400 行按 trial 那种带长文本的行约 1 MB，留出十倍余量仍在
+# max_allowed_packet 默认值以内；纯短行的表也就多跑几十次语句，秒级
+CHUNK = 400
+
 
 @dataclass
 class LoadResult:
@@ -158,7 +162,11 @@ def upsert(conn: Connection, table: str, rows: list[dict]) -> int:
         + ") ON DUPLICATE KEY UPDATE "
         + ", ".join(f"`{c}`=VALUES(`{c}`)" for c in cols)
     )
-    conn.execute(db.text(sql), [_prep(r) for r in rows])
+    # 分批不是优化洁癖：trial 一行带着入排标准全文能到 3 KB，两万行拼成一条语句会顶到
+    # MySQL 的 max_allowed_packet，而报出来的还是"连接断开"这种指不到根因的话
+    batch = [_prep(r) for r in rows]
+    for i in range(0, len(batch), CHUNK):
+        conn.execute(db.text(sql), batch[i:i + CHUNK])
     return len(rows)
 
 

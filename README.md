@@ -7,7 +7,7 @@
 数据全部来自公开源抓取，仓库里没有人工录入模块。每个数字都带来源、口径与查阅时间；
 本站不做诊断，症状反查输出的是参考排序。
 
-## 当前进度：P0 收口、装载已过危险因素维，下一批是研究层
+## 当前进度：P0 收口、装载六批已过研究层，下一批是后端
 
 P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"，两个产出都已在仓库里：
 [docs/数据源覆盖度.md](docs/数据源覆盖度.md)（13 列 × 16 份裁定，由
@@ -19,11 +19,11 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"，两个产出�
 同内容）。每张表的每一列都对着 `source_probe_log` 里的 `fields_seen` 与 `sample` 来——
 探针没量到的字段不建列，源给出口径差别的地方拆成列存而不是混成一列。
 装载器已开工：`etl/onco_etl/load/` 是底座（拿版本号、幂等写行、出处五列），
-疾病主档、器官树与组织学、统计层与生存率、症状、危险因素五批已落库——`disease` 18 行（`ncit_id` 18/18 非空）、
+疾病主档、器官树与组织学、统计层与生存率、症状、危险因素、研究层六批已落库——`disease` 18 行（`ncit_id` 18/18 非空）、
 `anatomy_node` 133 个节点（82 个 SEER site recode + 51 个 MONDO 亚部位 term）、
 `histology_code` 657 个恶性形态学码，逐病挂载 85 条器官关系与 3,111 条组织学关系；
-`stat_fact` 16,398 行（GLOBOCAN 中国 2024 国家单点 162 / GCO Over Time 逐年 × 18 档 5 岁组
-11,232 / SEER 新发率与死亡率年度序列加年龄组构成 5,004），`survival` 1,762 行
+`stat_fact` 16,470 行（GLOBOCAN 中国 2024 国家单点 162 / GCO Over Time 逐年 × 18 档 5 岁组
+11,232 / SEER 新发率与死亡率年度序列加年龄组构成 5,004 / 研究层四个计数 72），`survival` 1,762 行
 （分期档 17 病 + 全期头条 18 病 + 五年存活率逐年序列，其中 882 行是 Joinpoint 拟合值）。
 五年存活率整维只在 `survival` 一张表里，长表不重复写同一个数；中国死亡年龄组这一维
 源侧就是 0 行，页面按空态显示。
@@ -37,7 +37,16 @@ P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"，两个产出�
 一行是一条关联不是一个位点，键含研究号与 p 值，所以行数比去异位点数 4,493 大）；GBD CRA 71 行
 覆盖 17/18 病（brain 在源里一行都没有），这一层只有清单没有强度——源里 Deaths/YLLs/YLDs/DALYs
 四列的 `X` 标的是"这个组合有数"，不是效应量。`paf`、`paf_basis`、`risk_factor.label_zh` 建而不填。
-其余按维度分批推进——研究层（试验 / 文献 / 靶点与药），后端与前端接在这之后。
+研究层一批四源合一台（`load/research.py`）：`trial` 23,705 行＝19,254 个在招试验（一行是一个试验
+命中一个病，2,469 个跨病出现，最多一个试验挂在 17 个病上），只落在招三档所以 `why_stopped` 整列空；
+`publication` 9,000 行是每病按相关度取的前 500——上限样本不是全量，库内真实命中数与靶点/药计数
+一起进 `stat_fact` 那 72 行 `query_count`；OT 的 228,551 条关联按 `score ≥ 0.1` 收成 `disease_target`
+28,919 行与 `target` 7,098 个节点（节点只从落库的关系行长出来，所以两个数对得上），`drug` 6,309 行
+按 (病, 药, 阶段) 存、机制并成数组（4,128 行有机制）。这一台与其他五台唯一的差别是探针从没取过行
+（B5 那三支判的是"这一维能不能拿到"），所以行级取数由装载器自己做：原始响应 gzip 进
+`data/raw/<源>/rows-<版本>/`，并按四个新 dataset_code 补登记 `dataset_release`——
+`--offline` 因此能逐字段重放，本轮离线重放与联网那趟的装载报告除耗时外逐字相同。
+装载侧到此按维度收口（`MVP裁定.md` §一 里判"进"的维都已落库），下一批是后端与前端。
 P0 只剩一件收尾的事：IHME 的免费非商用账号已注册、凭据已填进 `.env`，但数值入口的登录是
 Azure AD B2C 换 token（scope `…/data-api/data.read`，界面前还有一层 Cloudflare），这条取数路还没实现。
 接上之前 `gbd_results` 一支探针记 `paused`（`gbd_cra` 匿名可取的清单已在 C2e 落库），
@@ -110,7 +119,7 @@ Open Targets 关联靶点 18 病合计 228,551 条、最少的一个病 3,868 �
 按记录级抽样只有 31.7% 能真读到正文（症状维不吃它：B6 实测 PDQ 页面 L2 规则解析就够，
 这个数只在将来真要从文献正文里挖症状时才需要重新拿起来）；CT 匿名侧没有地理过滤器
 （`filter.geo` 与 `aggFilters=geo` 都被拒），所以"有没有中国参与的试验"只能把地点国家取回自己数，
-实测 900 条抽样里 0 条中国大陆。Open Targets 整包 56 个数据集 / 1,102 个 parquet / 58.5 GiB，
+实测 900 条抽样里 141 条（15.7%）有中国大陆研究地点。Open Targets 整包 56 个数据集 / 1,102 个 parquet / 58.5 GiB，
 点查够用，不下载整包；它把乳腺与胰腺落在窄档（自身文献 88 / 382 而父节点 710,750 / 166,685），
 B7c 已裁成一份逐病声明 `targets.OT_NODE`：**只换乳腺癌**（`MONDO:0007254`，换后文献 724,160、
 在研药 1,036），胰腺不换——它的父节点在研药反而更少（30 对本节点 463），
@@ -166,6 +175,7 @@ ops\etl.ps1 load --code anatomy --offline # 器官树与组织学：SEER 交叉�
 ops\etl.ps1 load --code stats --offline  # 统计层：GLOBOCAN + GCO Over Time + SEER → stat_fact 与 survival
 ops\etl.ps1 load --code symptoms --offline # 症状：PDQ 英文 + 中文维基条目 + WHO 中文版 → symptom
 ops\etl.ps1 load --code risks --offline    # 危险因素：GWAS 关联 + GBD CRA 清单 → risk_factor 与 disease_risk_factor
+ops\etl.ps1 load --code research # 研究层：CT 试验 + EPMC 文献 + OT 靶点与药 → 五张表；六台里唯一自己取行的，首跑联网并归档，之后可 --offline
 ops\etl.ps1 load --offline               # 全部装载器按注册顺序跑一遍
 ops\etl.ps1 load --code anatomy --dry-run # 整批写进去再回滚，只验约束不留下数据
 ops\etl.ps1 probe-reach --code mondo     # 只探指定源的可达性

@@ -140,6 +140,28 @@ def _quoted(terms: tuple[str, ...]) -> str:
     return " OR ".join('"' + t + '"' for t in terms)
 
 
+def dig(sec: dict, path: str):
+    """按 `FIELD_PATHS` 那种点分路径从一条记录的 `protocolSection` 取值，任一段缺失回 None。
+
+    提出来给装载器共用不是收敛代码美观：两处各写一份 walk，源改字段名时只会有一边
+    悄悄取成 None，表现是"探针说这列有值，库里全是空"。
+
+    路径要能穿过数组：`locations.country` 的 `locations` 是一组对象，只走字典的话这一路
+    恒为 None——第一版就把它读成"50 条抽样里 0 条有研究地点"，而源其实给了。
+    """
+    cur: object = sec
+    for part in path.split(".")[1:]:
+        if isinstance(cur, dict):
+            cur = cur.get(part)
+        elif isinstance(cur, list):
+            cur = [x.get(part) for x in cur if isinstance(x, dict) and x.get(part) is not None]
+        else:
+            return None
+        if cur is None:
+            return None
+    return cur
+
+
 def _presence(v) -> bool:
     if v is None or v == "" or v == [] or v == {}:
         return False
@@ -170,11 +192,7 @@ def _sample(cond: str) -> tuple[dict, int, str]:
         sec = s.get("protocolSection") or {}
         got: dict[str, object] = {}
         for key, path in FIELD_PATHS.items():
-            cur: object = sec
-            for part in path.split(".")[1:]:
-                cur = cur.get(part) if isinstance(cur, dict) else None
-                if cur is None:
-                    break
+            cur = dig(sec, path)
             got[key] = cur
             if _presence(cur):
                 pres[key] += 1

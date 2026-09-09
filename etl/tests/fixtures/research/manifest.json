@@ -1,0 +1,53 @@
+{
+  "note": "上游记录的原样切片：只裁数组长度（每条数据集前 3 条记录），不改字段、不重排键。整份归档在 data/raw（gitignore），这一页是「离线可重放」的那份凭据。",
+  "files": {
+    "trial-lung.json": {
+      "bytes": 20277,
+      "sha256": "f88bf66a1ddebfe1fc6eb0b0f97ebf207d73fe5ba45bca237eedc4c8504d1cbc",
+      "source": "ctgov_v2",
+      "dataset_code": "studies-active-rows",
+      "disease": "lung",
+      "upstream_version": "2026-09-08T09:00:04",
+      "archived_from": "data/raw/ctgov_v2/rows-2026-09-08",
+      "records": 3,
+      "total_in_source": 3191,
+      "why_this_page": "lung 声明了五个词（主题词裸写 + 四个加引号同义词），matched_terms 那一列在这病上会同时命中三个词——子串关系只有这里有样本"
+    },
+    "pub-lung.json": {
+      "bytes": 24054,
+      "sha256": "077b686bc0397c3f9831f58391d243d8b3f905e46a3ad622a58ad0ef44f8e44e",
+      "source": "europepmc",
+      "dataset_code": "search-core-rows",
+      "disease": "lung",
+      "upstream_version": "v6.9-2021+",
+      "archived_from": "data/raw/europepmc/rows-2026-09-09",
+      "records": 3,
+      "total_in_source": 96010,
+      "why_this_page": "EPMC 首页前几条同时带 pmid/doi/摘要与 isOpenAccess 标记，抄录列与三个 Y/N flag 都能在一页里判到"
+    },
+    "assoc-breast_female.json": {
+      "bytes": 2361,
+      "sha256": "6226bbfde8abf9f4cc5fad0bf8cf84669533e4e6395dd602aaf8f14913d697e9",
+      "source": "opentargets",
+      "dataset_code": "assoc-rows",
+      "disease": "breast_female",
+      "upstream_version": "26.6.3",
+      "archived_from": "data/raw/opentargets/rows-26.6.3",
+      "records": 3,
+      "total_in_source": 17064,
+      "why_this_page": "乳腺癌按 B7c 换了宽节点 MONDO_0007254，node_used 这一列只有在这病上才跟主条目不一样"
+    },
+    "drug-breast_female.json": {
+      "bytes": 1165,
+      "sha256": "be953eb935a3ef50bca09fac2924a3d0ebfffc2b301dfacbceaa4f71e072c647",
+      "source": "opentargets",
+      "dataset_code": "drug-rows",
+      "disease": "breast_female",
+      "upstream_version": "26.6.3",
+      "archived_from": "data/raw/opentargets/rows-26.6.3-drug",
+      "records": 3,
+      "total_in_source": 1036,
+      "why_this_page": "换档后这一病在研药最多，机制数组、drugType 与阶段取值都齐全"
+    }
+  }
+}

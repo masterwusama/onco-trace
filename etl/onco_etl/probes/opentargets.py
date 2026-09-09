@@ -205,11 +205,20 @@ def probe(offline: bool = False) -> ProbeResult:
             ' datasourceScores{id score}}}}}' % _node(TARGETS[0]))
         ms += m
         reaches.append(reach)
+        # 药物那一支的行级字段：`drug` 表建表时只量过 drugAndClinicalCandidates.count，
+        # 列宽与幂等键要的是行里的形状，所以这里补一次抽样。这个字段没有 page 参数，
+        # 抽到的就是全量，顺带能验"整表返回"这个前提还在不在
+        ddata, m, reach = _gql(
+            '{d:disease(efoId:"%s"){drugAndClinicalCandidates{count rows{id maxClinicalStage'
+            ' drug{id name drugType mechanismsOfAction{rows{mechanismOfAction actionType'
+            ' targetName}}}}}}}' % _node(TARGETS[0]), mb=200_000_000)
+        ms += m
+        reaches.append(reach)
         meta, m, reach = _gql("{meta{apiVersion{x y z suffix}}}")
         ms += m
         reaches.append(reach)
         out = {"diseases": data, "with_parents": pdata, "overridden": odata,
-               "assoc_sample": sdata, "meta": meta}
+               "assoc_sample": sdata, "drug_sample": ddata, "meta": meta}
         key_dir = raw.archive_dir(SOURCE, ver or "no-version")
         blobs = {"manifest.json": man, "dirs.json": dirs, "diseases.json": out,
                  "croissant.json": raw_manifest}
@@ -278,6 +287,29 @@ def probe(offline: bool = False) -> ProbeResult:
             (r.get("target") or {}).get("approvedSymbol") or "?", round(r.get("score") or 0, 3),
             top.get("id") or "?", round(top.get("score") or 0, 3))
     peek = "、".join(_peek(r) for r in sample)
+    # 药物行级字段：`drug` 表建表时只量过 count，phase / moa / uk_drug 三处形状都靠这一趟补
+    dblk = ((out.get("drug_sample") or {}).get("d") or {}).get("drugAndClinicalCandidates") or {}
+    drows = dblk.get("rows") or []
+    dcnt = int(dblk.get("count") or 0)
+
+    def _d(r, *path):
+        cur = r
+        for k in path:
+            cur = (cur or {}).get(k)
+        return cur
+
+    dstages = sorted({str(r.get("maxClinicalStage") or "") for r in drows})
+    chembl = sum(1 for r in drows if str(_d(r, "drug", "id") or "").startswith("CHEMBL"))
+    named = sum(1 for r in drows if str(_d(r, "drug", "name") or "").strip())
+    moa = sum(1 for r in drows if _d(r, "drug", "mechanismsOfAction", "rows"))
+    dtypes = sorted({str(_d(r, "drug", "drugType") or "") for r in drows})
+    # 源给的一行是 (药, 阶段, 来源关联) 的三元组：去重比就是装载器要收拢的幅度
+    pairs = len({(str(_d(r, "drug", "name") or "").strip().lower(),
+                  str(r.get("maxClinicalStage") or "")) for r in drows})
+    name_max = max((len(str(_d(r, "drug", "name") or "")) for r in drows), default=0)
+    moa_max = max((len(str(m.get("mechanismOfAction") or ""))
+                   for r in drows for m in (_d(r, "drug", "mechanismsOfAction", "rows") or [])),
+                  default=0)
     av = ((out.get("meta") or {}).get("meta") or {}).get("apiVersion") or {}
     api_v = ".".join(str(av[k]) for k in ("x", "y", "z") if av.get(k)) or "?"
     pheno_zero = [p["code"] for p in per if not p["pheno"]]
@@ -312,6 +344,17 @@ def probe(offline: bool = False) -> ProbeResult:
         f"18 病合计 {assoc_all:,} 条；在研药（drugAndClinicalCandidates）合计 "
         f"{sum(p['drugs'] for p in per):,}。"
         f"带分数的靶点清单实测可取（{TARGETS[0].code} 前 {len(sample)} 条：{peek}）。"
+        + ("" if out.get("drug_sample") else " 药物行级字段：本份归档早于该抽样，未取回。")
+        + (f"药物行级字段本轮补测（`drug` 表建表时只量过 count）：{TARGETS[0].code} 一趟整表返回 "
+           f"count={dcnt}、实到 {len(drows)} 行"
+           + ("，行数与 count 不等——这字段大概加分页了，装载器要先重测"
+              if dcnt and len(drows) != dcnt else
+              f"（说明这个字段确实没有分页参数）。maxClinicalStage 见到 {dstages}；"
+              f"drug.id {chembl}/{len(drows)} 是 CHEMBL 形、name 非空 {named}、"
+              f"机制数组非空 {moa}；drugType 取值 {dtypes}。"
+              f"按 (药名,阶段) 去重只剩 {pairs} 组，说明源给的一行是 (药,阶段,来源关联) 的三元组、"
+              f"装载器必须按 uk_drug 收拢；实测最长药名 {name_max} 字符、"
+              f"最长机制描述 {moa_max} 字符。") if out.get("drug_sample") else "")
         + swap_txt
         + f"其余 {len(TARGETS) - len(swap_rows)} 病仍按声明主条目查，"
         "探针不自己按名字换档（换了就把 icd10 语义对齐破坏了），只读 targets.OT_NODE 这一份声明。"
@@ -352,7 +395,12 @@ def probe(offline: bool = False) -> ProbeResult:
         diseases_covered=covered,
         diseases_total=len(TARGETS),
         fields_seen=["associatedTargets.count", "literatureOcurrences.count", "phenotypes.count",
-                     "drugAndClinicalCandidates.count", "parents", "dbXRefs", "description",
+                     "drugAndClinicalCandidates.count",
+                     "drugAndClinicalCandidates.rows[].id/maxClinicalStage",
+                     "drugAndClinicalCandidates.rows[].drug{id,name,drugType}",
+                     "drugAndClinicalCandidates.rows[].drug.mechanismsOfAction"
+                     ".rows[]{mechanismOfAction,actionType,targetName}",
+                     "parents", "dbXRefs", "description",
                      "associatedTargets.rows[].target.approvedSymbol/approvedName",
                      "associatedTargets.rows[].datasourceScores{id,score}",
                      "meta.apiVersion{x,y,z,suffix}", "croissant.distribution[]",
