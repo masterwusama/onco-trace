@@ -50,6 +50,20 @@ const diseases = computed(() => {
   return []
 })
 
+// risk 响应没有 diseases/n_diseases，只有 genetic/exposure 两层各一份清单（reverse.py
+// 按两层分列回），总数在这里合成。库里没有同时挂两层的因素，相加不会重计。
+const nTotal = computed(() => {
+  if (!data.value) return 0
+  if (type.value === 'reverse-risk')
+    return (data.value.genetic?.length || 0) + (data.value.exposure?.length || 0)
+  return data.value.n_diseases || diseases.value.length
+})
+
+// 症状分源块里每一行是那个源的 item（一个病一行），病名从全局清单按 id 查回。
+function disOf(id) {
+  return diseases.value.find((d) => d.id === id) || null
+}
+
 const entity = computed(() => data.value?.entity || null)
 </script>
 
@@ -62,12 +76,12 @@ const entity = computed(() => data.value?.entity || null)
     <div v-else-if="loading" class="loading">正在加载…</div>
     <div v-else>
       <div v-if="entity" class="entity">
-        <h2>{{ entity.approved_symbol || entity.label || entity.name || entity.drug_id }}</h2>
+        <h2>{{ entity.approved_symbol || entity.label || entity.name || entity.drug_name || entity.drug_id }}</h2>
         <p v-if="entity.approved_name" class="sub">{{ entity.approved_name }}</p>
         <p v-if="entity.label_zh" class="sub">{{ entity.label_zh }}</p>
       </div>
 
-      <p class="count">关联疾病：{{ data.n_diseases || diseases.length }} 个</p>
+      <p class="count">关联疾病：{{ nTotal }} 个</p>
 
       <template v-if="type === 'reverse-risk'">
         <div v-if="data.genetic?.length" class="block">
@@ -96,10 +110,12 @@ const entity = computed(() => data.value?.entity || null)
         <div v-for="src in data.sources" :key="src.source_code" class="block">
           <h3>{{ src.source_code }}（{{ src.n_items }} 条）</h3>
           <ul>
-            <li v-for="d in diseases" :key="d.id">
-              <RouterLink :to="{ name: 'detail', params: { code: d.code } }">
-                {{ d.name_zh }} <em>{{ d.code }}</em>
+            <li v-for="it in src.items" :key="it.id">
+              <RouterLink v-if="disOf(it.disease_id)"
+                          :to="{ name: 'detail', params: { code: disOf(it.disease_id).code } }">
+                {{ disOf(it.disease_id).name_zh }} <em>{{ disOf(it.disease_id).code }}</em>
               </RouterLink>
+              <span v-if="it.freq_band" class="mono"> · {{ it.freq_band }}</span>
             </li>
           </ul>
         </div>

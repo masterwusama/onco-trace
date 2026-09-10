@@ -233,7 +233,8 @@ def target_reverse(
         "n_diseases": len(diseases),
         "conventions": {
             "reverse_of": "/api/diseases/{code}/targets",
-            "order": "疾病按合成分降序（与正向页一致），同分再按病码升序",
+            "order": "疾病按病码升序（与全站清单一致）；同一病有多笔挂载时 "
+                     "score / novelty / node_used 取合成分最高那笔",
         },
     }
 
