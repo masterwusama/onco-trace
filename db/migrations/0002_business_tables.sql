@@ -1,7 +1,8 @@
 -- 业务表（P1 的 C1c）。逐维进不进、以什么口径进的裁定在 docs/MVP裁定.md §一，这里只写结构与口径列。
 -- 列的取舍全部对着 source_probe_log 里最近一次内容级探针的 fields_seen / sample 来的：
 -- 探针没量到的字段不建列（CT 的白名单里没有起止日期，所以 trial 就没有日期列），
--- 量到但源不给的列照建并留空（freq_band / paf / label_zh），页面据此出空态。
+-- 量到但源不给的列照建并留空（freq_band / label_zh），页面据此出空态（paf 原在此列，
+-- GBD Results 授权取数走通后已填，见 0008）。
 --
 -- 三条一起生效的约定：
 --   1. 每张事实表都带 source_id / dataset_release_id / extract_method / review_status / loaded_at，
@@ -31,7 +32,7 @@ CREATE TABLE IF NOT EXISTS `disease` (
   `xrefs` json DEFAULT NULL COMMENT '其余 xref 原样存（DOID/MEDGEN/UMLS/SCTID/OMIM/Orphanet/ICD10CM/ICD9…），稀疏的码不设列',
   `ot_node` varchar(24) NOT NULL DEFAULT '' COMMENT '研究层实际查询的节点。只有乳腺癌与 mondo_id 不同（targets.OT_NODE），换档前后的数都在探针 message 里可对账',
   `gwas_uris` json DEFAULT NULL COMMENT '效应量维额外认领的同级档（targets.GWAS_URI），空数组＝只认主条目',
-  `gbd_cause` varchar(16) NOT NULL DEFAULT '' COMMENT 'GBD 病因层级 L3 档。IHME 账号到位前不出数，这一列只是把对齐关系钉住',
+  `gbd_cause` varchar(16) NOT NULL DEFAULT '' COMMENT 'GBD 病因层级 L3 档，GBD Results 授权取数的对齐键：死亡年龄组与 PAF 两份 ZIP 都按它取回（实测 18/18 有数），不再是钉住对齐不出数的空列',
   `gco_today` varchar(8) NOT NULL DEFAULT '',
   `gco_time` varchar(8) NOT NULL DEFAULT '' COMMENT '与 gco_today 分开声明：两套是各自独立的码空间，同一 ICD-O-3 段在两边归到不同的病',
   `search_terms` json NOT NULL COMMENT '研究层查询词表，第一项是 MeSH 主题词。trial 与 publication 的命中全按它算，两侧共用一份是为了矩阵两列口径可比',
@@ -146,11 +147,11 @@ CREATE TABLE IF NOT EXISTS `symptom` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 -- 危险因素。两层都实测过，缺的东西不一样：遗传关联（GWAS）带效应量与 p 值、给不出暴露语义，
--- 可干预暴露（GBD CRA 的 A2 交叉表）给得出清单、四列度量只是"这个组合有数"的标记。
--- 归因强度 PAF 两路都没有——它整个在 IHME 授权门后，所以 paf 建而不填。
+-- 可干预暴露（GBD CRA 的 A2 交叉表）给得出清单，四列度量只是"这个组合有数"的标记，
+-- 强度由 GBD Results 的年龄标化 PAF 补上——但 PAF 是人群归因分数，与 OR 不可比。
 CREATE TABLE IF NOT EXISTS `risk_factor` (
   `id` int NOT NULL AUTO_INCREMENT,
-  `kind` enum('genetic_locus','exposure') NOT NULL COMMENT 'genetic_locus＝GWAS 的位点/基因；exposure＝可干预暴露，取 CRA A2 表 Risk 列的 REI 名（实测 33 个、71 条关联、17/18 病）。两类的缺口分开看：前者不是可干预暴露，后者没有强度',
+  `kind` enum('genetic_locus','exposure') NOT NULL COMMENT 'genetic_locus＝GWAS 的位点/基因；exposure＝可干预暴露，取 CRA A2 表 Risk 列的 REI 名（实测 33 个、71 条关联、17/18 病）。两类的缺口分开看：前者不是可干预暴露，后者的强度是 PAF（人群归因分数），与 OR 不可比',
   `label` varchar(191) NOT NULL COMMENT 'genetic_locus 存 MAPPED_GENE 整串（实测最长 48 字符；一行多个基因是分号相连的，不拆成多个节点——拆开要把同一条关联复制成几行，行数虚增），整列为空的（613/6,210 行）退到 SNPS；exposure 存 CRA 的危险因素名（实测最长 57 字符）',
   `label_zh` varchar(96) DEFAULT NULL COMMENT '建而不填，同中文器官名：没有可匿名取回的中文名源',
   `source_id` int NOT NULL,
@@ -165,12 +166,12 @@ CREATE TABLE IF NOT EXISTS `risk_factor` (
 
 -- 关系行。GWAS 一行是一个"关联"（位点 × 表型 × 研究），CRA 一行是一个"对应关系"（病因 × REI），
 -- 同一张表分开的是 role 与那批 GWAS 专属列的空缺，而不是拆两张表——拆表会让人以为两边的
--- 强度可比，而 CRA 一侧一个强度都没有。
+-- 强度可比，而 CRA 一侧的强度是 PAF（人群归因分数），与 OR 本就不可比。
 CREATE TABLE IF NOT EXISTS `disease_risk_factor` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `disease_id` int NOT NULL,
   `risk_factor_id` int NOT NULL,
-  `role` enum('genetic','exposure') NOT NULL COMMENT '不给默认值：默认 genetic 会让 CRA 那 71 行看起来像遗传关联。genetic 是遗传易感性不是可干预暴露，页面文案不许写成"危险因素排行"；exposure 有清单无强度',
+  `role` enum('genetic','exposure') NOT NULL COMMENT '不给默认值：默认 genetic 会让 CRA 那 71 行看起来像遗传关联。genetic 是遗传易感性不是可干预暴露，页面文案不许写成"危险因素排行"；exposure 有清单、强度是 PAF（人群归因分数）不是效应量',
   `assoc_key` char(40) NOT NULL COMMENT 'GWAS：sha1(病码|STUDY ACCESSION|SNPS|STRONGEST SNP-RISK ALLELE|P-VALUE)——一行是一个关联不是一个位点，键必须含研究：实测按 PUBMEDID 构造 6,210 命中行只剩 5,669 组，折掉的 541 行里有 496 组研究号与 p 值都不同（一篇论文登记多个研究），那是漏写不是去重。只到研究号又太粗：同一次录入会把一个位点按两个 p 值报两次（17 组），加上 P-VALUE 才是 6,208 行。剩下 2 组只差一个连接号写法（`–` 与 `-`），本就是同一条关联，该折。CRA：sha1(cra|cause_id|rei_id)——两支形状本就不同，分开构造才不会互相撞键',
   `uri_tier` enum('main','declared') DEFAULT NULL COMMENT 'GWAS 专用：这一行挂在主条目还是 targets.GWAS_URI 的声明档上，两个口径的覆盖数是 14/18 与 18/18，混成一个数就是虚报。CRA 的关联没有档位概念，留 NULL 而不是造一个 n/a 值',
   `trait_label` varchar(191) NOT NULL DEFAULT '' COMMENT '源里这一行管这个病叫什么：GWAS 存 MAPPED_TRAIT 原文（声明档命中时它不等于本病的 name_en），CRA 存 GBD 的 Cause 名',
@@ -189,8 +190,8 @@ CREATE TABLE IF NOT EXISTS `disease_risk_factor` (
   `study_accession` varchar(16) NOT NULL DEFAULT '' COMMENT '实测最长 12（GCST90090980）。CRA 行留空',
   `initial_sample` varchar(380) NOT NULL DEFAULT '' COMMENT '实测最长 357：源写的是 "1,352 African American cases, 9,610 African American controls, …" 这种逐层串，原样存不解析',
   `replication_sample` varchar(380) NOT NULL DEFAULT '' COMMENT '实测最长 298，命中行 1,971/6,210 有（很多研究只在 INITIAL 里写了后续队列）',
-  `paf` decimal(6,2) DEFAULT NULL COMMENT '建而不填：两半效应量都在 IHME 授权门后（vizhub 数据面四个路由全 401）。UI 不画数值榜，标"需 IHME 授权"',
-  `paf_basis` varchar(64) DEFAULT NULL COMMENT '将来填 paf 时记它是哪个 measure、哪个年份窗算出来的',
+  `paf` decimal(6,2) DEFAULT NULL COMMENT 'exposure 行填 GBD 2023 的年龄标化 PAF（Deaths、2021、中国；71/71 条全中，值域 -7.33~100.00，负值＝保护方向照落）；genetic 行留 NULL——GWAS 没有 PAF。它是人群归因分数不是效应量，与 or_beta 不可比，不许把两类混成一个榜',
+  `paf_basis` varchar(64) DEFAULT NULL COMMENT 'paf 的口径串（如 "GBD 2023 Deaths 年龄标化 2021"）：哪个 measure、哪一年算出来的记在这里，换口径重取时这一列跟着变',
   `source_id` int NOT NULL,
   `dataset_release_id` bigint DEFAULT NULL,
   `extract_method` enum('l1_structured','l2_rule','llm_extract','declared') NOT NULL,
@@ -214,7 +215,7 @@ CREATE TABLE IF NOT EXISTS `stat_fact` (
   `unit` enum('count','per_100k','percent','ratio') NOT NULL,
   `value` decimal(16,4) NOT NULL COMMENT 'SEER 用 "-" 表示"无观测"而不是 0，那种格子直接不落行',
   `year` int NOT NULL DEFAULT 0 COMMENT '0＝不是年度序列：国家级单点估算、年龄组占比、按声明词命中的条数都是 0',
-  `age_band` varchar(32) NOT NULL DEFAULT '' COMMENT '按源原样存。SEER 只有 8 档宽分组（<20 到 >84），GCO 是 18 档，两套混画会得出假的年龄梯度',
+  `age_band` varchar(32) NOT NULL DEFAULT '' COMMENT '按源原样存。SEER 只有 8 档宽分组（<20 到 >84），GCO 是 18 档，GBD 是 20 档（<5 到 95+），三套混画会得出假的年龄梯度',
   `sex` enum('both','male','female') NOT NULL DEFAULT 'both',
   `region` varchar(48) NOT NULL DEFAULT '' COMMENT 'World / China / US / SEER 8 / SEER 12 / SEER 21。生存率与发病率一律是美国登记处口径，页面必须写明不是中国数据',
   `estimate_basis` enum('national_estimate','registry_extrapolated','registry_cohort','model_trend','query_count') NOT NULL COMMENT '这一列是统计层最要紧的口径：GLOBOCAN 的国家级估算与 GCO Over Time 的登记处外推（中国是 5 个登记处覆盖 60% 人口、最新一年 2017）不同源，两列分开存、不可相减成趋势；SEER 的 Modeled Trend 是拟合线不是观测值；query_count 是"按声明词命中多少条"，不是流行病学计数',

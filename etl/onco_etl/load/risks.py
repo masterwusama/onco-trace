@@ -1,7 +1,8 @@
-"""危险因素装载器：GWAS 遗传关联 + GBD CRA 可干预暴露清单，一台写 `risk_factor` 与 `disease_risk_factor`。
+"""危险因素装载器：GWAS 遗传关联 + GBD CRA 可干预暴露，一台写 `risk_factor` 与 `disease_risk_factor`。
 
 两源合一台，因为它们填的是同一对表的同一批列，而这一对表的意义全在"两类并排、缺口各自可见"
-（`role` 与那一列 `paf` 建而不填）。拆两台会让人以为两边的数可以相加。
+（`role` 分开两类；CRA 一支的强度由 GBD Results 的 PAF 补上，GWAS 一支有效应量却没有
+归因语义）。拆两台会让人以为两边的数可以相加。
 
 六条口径：
 
@@ -18,8 +19,13 @@
    CRA 的对应关系没有档位概念，那一列留 NULL。
 4. **`effect_kind` 整列未判定。** 源把 OR 与 β 装进同一列，方向只写在 CI 文本的
    unit increase/decrease 注记里，实测分不开（列注释写着数）。宁可不判，也不按"多数是 OR"猜。
-5. **CRA 只落清单，不落强度。** 33 个可干预暴露 × 71 条病因对应关系，四列度量在源里只是
-   "这个组合有数"的标记，PAF 整个在 IHME 授权门后。页面文案因此不许写成"危险因素排行"。
+5. **CRA 的清单出自 A2，强度出自 GBD Results。** A2 交叉表那四列度量只是"这个组合有数"
+   的标记；`paf` 由 GBD Results 的 PAF ZIP 补——Deaths × Percent × 年龄标化 × 2021 × 中国，
+   71 对 (cause_id, rei_id) 与 A2 的 71 条对应关系逐对相等（`check_paf` 核对，对不上就中止）。
+   匹配只按两边的数字 id，不按名——REI 的翻译名与改名都不许把对齐拖走。值 ×100 落成百分比
+   两位小数；负值是保护方向，照落不折（实测 3 条，最小 -7.33%）。`paf_basis` 记它是哪个
+   口径算出来的。paf 是人群归因分数、不是效应量，与 genetic 一支的 OR 没有可比性，
+   页面文案仍不许写成"危险因素排行"。
 6. **中文名列建而不填**，同器官名：没有可匿名取回的中文名源。
 
 目测的是两份规则产物（哪些表型名算这个病 / 剔聚合档后剩下的都是可干预暴露），声明在
@@ -28,7 +34,7 @@
 from __future__ import annotations
 
 from .. import db
-from ..probes import gbd_cra, gwas_catalog
+from ..probes import gbd_cra, gbd_results, gwas_catalog
 from ..targets import TARGETS
 from .base import Ctx, LoadResult, prov, replace_scope, upsert
 
@@ -36,6 +42,10 @@ GWAS = gwas_catalog.SOURCE
 GWAS_DATASET = gwas_catalog.DATASET
 CRA = gbd_cra.SOURCE
 CRA_DATASET = gbd_cra.DATASET
+GBD = gbd_results.SOURCE
+GBD_DATASET = gbd_results.DATASET
+# paf_basis 的口径串：paf 是哪个 measure、哪个年份窗算出来的（列注释就这么约定的）
+PAF_BASIS = "GBD 2023 Deaths 年龄标化 2021"
 
 GENETIC, EXPOSURE = "genetic_locus", "exposure"
 # 关联行的判断只有"这一行算不算这个病"，那两件事目测过；label 是源列原样、效应量与 p 值是
@@ -108,6 +118,26 @@ def check_cra(factors: list[gbd_cra.Factor]) -> list[str]:
     return [t.code for t in TARGETS if t.code in gbd_cra.EYEBALL]
 
 
+def paf_map(pl: gbd_results.GbdPayload) -> dict[tuple[int, int], float]:
+    """GBD Results 的 PAF 表收到 (cause_id, rei_id) → 小数。
+
+    键取整数对：`Factor.assoc_key` 也是按这两个数字造的，按名对齐会被 REI 的翻译名
+    与改名拖走。值保持源里的小数原样，×100 落百分比的事在 `cra_links` 做。
+    """
+    return {(int(r["cause_id"]), int(r["rei_id"])): float(r["val"]) for r in pl.paf}
+
+
+def check_paf(factors: list[gbd_cra.Factor], pafs: dict[tuple[int, int], float]) -> None:
+    """GBD Results 的 71 对 PAF 与 CRA 的 71 条对应关系必须逐对相等：对不上就是两边的
+    口径漂了，只落一半进去会让人以为没落的那一半是零。"""
+    want = {(f.cause_id, f.rei_id) for f in factors}
+    got = set(pafs)
+    if want != got:
+        raise SystemExit(
+            f"GBD Results 的 PAF 对不上 CRA 的对应关系：多了 {sorted(got - want)}、"
+            f"少了 {sorted(want - got)}——两份源不是同一版口径，重跑探针看判据再装载")
+
+
 def gwas_nodes(rows, sid, rid) -> list[dict]:
     return [
         {"kind": GENETIC, "label": lab, "label_zh": None,
@@ -157,10 +187,16 @@ def gwas_links(rows, rf, ids, sid, rid, eyeballed) -> list[dict]:
     ]
 
 
-def cra_links(factors, rf, ids, sid, rid, eyeballed) -> list[dict]:
-    """CRA 一支只有病因 × 风险因素这一件事可记，GWAS 专属那批列一律留空。"""
-    return [
-        {
+def cra_links(factors, rf, ids, sid, rid, eyeballed, pafs=None) -> list[dict]:
+    """CRA 一支：对应关系出自 A2、强度出自 GBD Results（`pafs`＝(cause_id, rei_id)→小数）。
+
+    `paf`/`paf_basis` 两个键每行都带——upsert 对同批行字段不一致会中止，没进表的行
+    就得显式给 None 而不是缺键。GWAS 专属那批列照旧一律留空。
+    """
+    out = []
+    for f in sorted(factors, key=lambda x: (x.code, x.rei_name)):
+        v = pafs.get((f.cause_id, f.rei_id)) if pafs else None
+        out.append({
             "disease_id": ids[f.code],
             "risk_factor_id": rf[(EXPOSURE, f.rei_name.lower())],
             "role": "exposure",
@@ -173,11 +209,12 @@ def cra_links(factors, rf, ids, sid, rid, eyeballed) -> list[dict]:
             "or_beta": None, "effect_kind": "unknown", "ci95_text": "",
             "pubmedid": 0, "study_accession": "", "initial_sample": "",
             "replication_sample": "",
+            "paf": round(v * 100, 2) if v is not None else None,
+            "paf_basis": PAF_BASIS if v is not None else None,
             **prov(source_id=sid, dataset_release_id=rid, extract_method="l2_rule",
                    review_status=REVIEW_ALIGN if f.code in eyeballed else REVIEW_PLAIN),
-        }
-        for f in sorted(factors, key=lambda x: (x.code, x.rei_name))
-    ]
+        })
+    return out
 
 
 def load(ctx: Ctx) -> LoadResult:
@@ -187,11 +224,18 @@ def load(ctx: Ctx) -> LoadResult:
     cp = gbd_cra.load_payload(ctx.offline)
     if cp.blocked:
         raise SystemExit(f"CRA 对照表没取成（{cp.blocked.verdict}）：{cp.blocked.message}")
+    gpl = gbd_results.load_payload(ctx.offline)
+    if gpl.blocked:
+        raise SystemExit(f"GBD Results 的归档没取成（{gpl.blocked.verdict}）：{gpl.blocked.message}")
+    if not gpl.paf:
+        raise SystemExit("GBD Results 的 PAF 表解析出了空表——口径漂了，先跑探针看判据再装载")
 
     rows = kept_assocs(gp.scan.assocs)
     factors = cp.cra.factors
     eye_g = check_gwas(rows)
     eye_c = check_cra(factors)
+    pafs = paf_map(gpl)
+    check_paf(factors, pafs)
 
     with ctx.tx() as conn:
         sid_g, sid_c = ctx.source_id(GWAS), ctx.source_id(CRA)
@@ -199,6 +243,8 @@ def load(ctx: Ctx) -> LoadResult:
         # 同一份字节的第二个版本号
         rid_g = ctx.latest_release(conn, GWAS, GWAS_DATASET)
         rid_c = ctx.latest_release(conn, CRA, CRA_DATASET)
+        # GBD Results 的发布由探针（或 stats 装载器）登记，这里同样只复用那一版
+        rid_p = ctx.latest_release(conn, GBD, GBD_DATASET)
         ids = ctx.disease_ids(conn)
 
         n_rf = upsert(conn, "risk_factor", gwas_nodes(rows, sid_g, rid_g))
@@ -209,7 +255,7 @@ def load(ctx: Ctx) -> LoadResult:
         rf = {(str(k), str(l).lower()): int(i)
               for k, l, i in db.rows(conn, "SELECT `kind`,`label`,`id` FROM `risk_factor`")}
         links = gwas_links(rows, rf, ids, sid_g, rid_g, eye_g) + \
-            cra_links(factors, rf, ids, sid_c, rid_c, eye_c)
+            cra_links(factors, rf, ids, sid_c, rid_c, eye_c, pafs)
         n_g = replace_scope(conn, "disease_risk_factor", {"source_id": sid_g},
                             [r for r in links if r["source_id"] == sid_g])
         n_c = replace_scope(conn, "disease_risk_factor", {"source_id": sid_c},
@@ -218,22 +264,23 @@ def load(ctx: Ctx) -> LoadResult:
     covered = len({r["disease_id"] for r in links})
     ctx.job.set(written=n_rf + n_g + n_c)
     main = sum(1 for a in rows if a.tier == "main")
-    deaths = sum(1 for f in factors if f.deaths)
+    paf_rows = [r for r in links if r["source_id"] == sid_c]
+    filled = sum(1 for r in paf_rows if r["paf"] is not None)
+    neg = sum(1 for r in paf_rows if r["paf"] is not None and r["paf"] < 0)
     msg = (
         f"GWAS {n_g} 行遗传关联（{len({a.code for a in rows})}/18 病，主条目 {main} 行 + "
         f"声明档 {n_g - main} 行；位点 {len({a.locus for a in rows})}、研究 "
         f"{len({a.study for a in rows})}；效应量 {sum(1 for a in rows if _text(a.or_beta))} 行、"
-        f"p 值全有）/ CRA {n_c} 行可干预暴露（"
-        f"{len({f.code for f in factors})}/18 病、{len({f.rei_name for f in factors})} 个暴露。"
-        f"源里那四列度量标记在这 {n_c} 条上全是 1（带 Deaths 的 {deaths} 条就是全部）——"
-        "它标的是「这个组合有数」，不是强度）。\n"
+        f"p 值全有）/ CRA {n_c} 行可干预暴露（{len({f.code for f in factors})}/18 病、"
+        f"{len({f.rei_name for f in factors})} 个暴露；GBD 2023 的 PAF 逐对全中——{filled}/{n_c} "
+        f"条带上归因强度（Deaths、年龄标化、2021、中国），{neg} 条负值＝保护方向照落）。\n"
         f"节点 {n_rf} 个（genetic_locus {len({_label(a) for a in rows})} + exposure "
         f"{len({f.rei_name for f in factors})}），基因整串当一个节点、"
         f"MAPPED_GENE 空的 {sum(1 for a in rows if not _text(a.gene))} 行退到 SNPS。\n"
-        "不写的三列：`paf`/`paf_basis`（归因强度整个在 IHME 授权门后，vizhub 数据面四个路由全 401）、"
-        "`label_zh`（没有可匿名取回的中文名源）；`effect_kind` 整列 unknown（OR 与 β 在源里"
-        "共列且实测分不开）。genetic 是遗传易感性、不是可干预暴露，页面不许把两类混成排行。"
-        f"两份归档 GWAS {gp.version} / CRA {cp.version}。"
+        "不写的两列：`label_zh`（没有可匿名取回的中文名源）；`effect_kind` 整列 unknown"
+        "（OR 与 β 在源里共列且实测分不开）。paf 是人群归因分数、与 genetic 一支的 OR 没有"
+        "可比性，页面不许把两类混成排行。"
+        f"三份归档 GWAS {gp.version} / CRA {cp.version} / GBD Results {gpl.version}。"
     )
     return LoadResult(
         written={"risk_factor": n_rf, "disease_risk_factor": n_g + n_c},

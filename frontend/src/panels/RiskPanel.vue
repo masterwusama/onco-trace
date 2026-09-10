@@ -62,7 +62,7 @@ function pmi(id) {
             <th>位点 label</th><th>snps</th><th>风险等位</th><th>位置</th>
             <th class="n">freq</th><th class="n">or_beta</th><th>ci95</th>
             <th>p 值</th><th class="n">-log10(p)</th><th>trait_label</th><th>study / PMID</th>
-            <th class="n">paf</th><th>关联出处</th><th>位点出处</th>
+            <th>关联出处</th><th>位点出处</th>
           </tr>
         </thead>
         <tbody>
@@ -87,7 +87,6 @@ function pmi(id) {
                 {{ r.pubmedid }} ↗</a>
               <span v-else class="nil" title="CRA 行没有文献号，库里存 0">—</span>
             </td>
-            <td class="n">{{ num(r.paf, 2) }}</td>
             <td><ProvenanceTag :prov="r.provenance" /></td>
             <td><ProvenanceTag :prov="r.factor?.provenance" /></td>
           </tr>
@@ -100,7 +99,7 @@ function pmi(id) {
       <table class="grid tight">
         <thead>
           <tr><th>暴露 label</th><th>kind</th><th>trait_label</th><th>trait_uri</th>
-              <th>关联出处</th><th>节点出处</th></tr>
+              <th class="n">paf（%）</th><th>关联出处</th><th>节点出处</th></tr>
         </thead>
         <tbody>
           <tr v-for="r in exposure.items" :key="r.id">
@@ -112,14 +111,16 @@ function pmi(id) {
             <td class="mono">{{ text(r.factor?.kind) }}</td>
             <td class="trunc" :title="String(r.trait_label)">{{ text(r.trait_label) }}</td>
             <td class="mono small">{{ text(r.trait_uri) }}</td>
+            <td class="n" :title="r.paf_basis || ''">{{ num(r.paf, 2) }}</td>
             <td><ProvenanceTag :prov="r.provenance" /></td>
             <td><ProvenanceTag :prov="r.factor?.provenance" /></td>
           </tr>
         </tbody>
       </table>
       <p class="legend-note">
-        这一层给得出名字、一个强度都没有：paf 两半都在 IHME 授权门后，
-        所以这里既不做归因分数榜，也不把 exposure 与上面的 genetic 相加。
+        每行带年龄标化 PAF（<code>{{ text(exposure.items?.[0]?.paf_basis) }}</code>）：×100 的百分数，
+        负值＝保护方向，悬停可见口径。PAF 是人群归因分数，与上面 genetic 层的 OR / p 值
+        不是同一种数——两层各自成榜、不相加。
       </p>
     </section>
   </PanelState>

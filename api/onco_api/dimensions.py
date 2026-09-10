@@ -6,12 +6,13 @@
 度量的切法照 docs/MVP裁定.md §一 走，每一处分开都有具体理由：
 - 症状分 en / zh：中文路实测只覆盖 7/18 病，混成一个数会让另外 11 病看起来也有中文名。
   同一张 symptom 表里判为非症状的 32 条置了 `rejected`，它们参与留痕但不参与覆盖数。
-- 危险因素分 genetic / exposure：两层形状不同（一边有位点与 p 值、一边只有清单），
+- 危险因素分 genetic / exposure：两层形状不同（一边是位点级关联带 OR/p，一边是暴露带 PAF），
   页面分栏不混排，所以"有没有数"也得分别问。
 - 统计层按"中国国家级单点 / 中国逐年×年龄组 / 美国年度序列 / 年龄组构成 / 查询计数"
   切开：这几组之间不允许相减（GLOBOCAN 的全国估算与 GCO 的登记处外推不同源），
-  所以不给一个合计的 stat 数。`age_death_cn` 就是"中国死亡年龄组零行"那条空态的
-  实测来源，而不是文档里的一句断言。
+  所以不给一个合计的 stat 数。GBD 2023 补的中国死亡年龄构成（`age_death_cn`，2021 年、
+  20 档年龄）也是 region='China' 且 year>0，但归"年龄组构成"那一组——cn_trend 排掉
+  pct 两度量，五组才仍是一份划分；它有没有数读那一格的实测而不是文档里的一句断言。
 - 生存率分分期档 / 全期头条 / 逐年序列：白血病只有后两层，分期档为 0 是源不给而不是解析失败。
 - 试验与药各带一个去重度量（`distinct:` 前缀）：`trial` 23,705 行只有 19,254 个 NCT、
   `drug` 6,309 行只有 2,437 个药名，页面把行数说成"多少个试验/药"就是虚报。
@@ -81,14 +82,18 @@ DIMS: tuple[Dim, ...] = (
         ),
         "any",
         "genetic 是遗传易感性不是可干预暴露，且一行是一个关联（研究 × 位点）不是一个位点："
-        "实测最多一病 2,151 行只对应 1,061 个位点；exposure 有清单无强度；paf 建而不填",
+        "实测最多一病 2,151 行只对应 1,061 个位点；exposure 71 行全带年龄标化 PAF"
+        "（GBD 2023，负值＝保护方向），与遗传层的 OR/p 不是同一种数，两榜不混排",
     ),
     Dim(
         "stat", "发病与死亡统计", "stat_fact", NOT_REJECTED,
         (
             ("any", "1=1"),
             ("cn_point", "region='China' AND year=0"),
-            ("cn_trend", "region='China' AND year>0"),
+            # cn_trend 排掉 pct 两度量：GBD 2023 的中国死亡年龄构成也是 region='China'
+            # 且 year>0，但它属于"年龄组构成"那一组（跨源不相减，§一），不排就重复计数、
+            # 五组不再是一份划分
+            ("cn_trend", "region='China' AND year>0 AND metric NOT IN ('age_case_pct','age_death_pct')"),
             ("us_series", "metric IN ('new_case_rate','death_rate')"),
             ("age_case", "metric='age_case_pct'"),
             ("age_death", "metric='age_death_pct'"),
@@ -96,7 +101,9 @@ DIMS: tuple[Dim, ...] = (
             ("query_count", "estimate_basis='query_count'"),
         ),
         "any",
-        "五组度量之间不可相减；query_count 是「按声明词命中多少条」，不是流行病学计数",
+        "五组互斥成一份划分：年龄组构成（*_pct 两度量）优先于地区与年份归组，GBD 的中国"
+        "死亡年龄构成（China+2021）落构成组不落中国逐年组；各组之间不可相减；query_count"
+        " 是「按声明词命中多少条」，不是流行病学计数",
     ),
     Dim(
         "survival", "五年存活率", "survival", NOT_REJECTED,

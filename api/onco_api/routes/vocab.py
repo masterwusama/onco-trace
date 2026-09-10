@@ -202,7 +202,7 @@ def disease_risk_factors(
     limit: int = Query(100, ge=1, le=500, description="遗传关联榜的取行数上限"),
     conn: Connection = Depends(get_conn),
 ) -> dict:
-    """危险因素：遗传关联（带效应量、榜要截断）与可干预暴露（清单，全回）两层分开。"""
+    """危险因素：遗传关联（带效应量、榜要截断）与可干预暴露（带 PAF，全回）两层分开。"""
     dis = get_disease(conn, code)
     refs = Refs(conn)
     did = dis["id"]
@@ -240,7 +240,7 @@ def disease_risk_factors(
 
     out = shell(conn, code, dis, "risk", {
         "two_layers": "genetic 与 exposure 两栏分列不相加：一边是位点级的关联（带 OR/β 与 p 值、"
-                      "给不出暴露语义），一边是可干预暴露清单（给得出名字、一个强度都没有）",
+                      "给不出暴露语义），一边是可干预暴露（带人群归因分数 PAF）",
         "row_is": "genetic 一行是一个关联（研究 × 位点 × p 值），不是一个位点：所以榜同时回"
                   "rows_ / loci / studies 三个数（实测最多一病 2,151 行只对应 1,061 个位点、"
                   "99 次研究录入）",
@@ -250,8 +250,9 @@ def disease_risk_factors(
         "order": "榜按 pvalue_mlog（源自己算好的 -log10(p)）降序，截断在 limit；"
                  "effect_kind 整列 unknown 不是解析漏了——源把 OR 与 β 装进同一列，"
                  "方向只写在 CI 文本的注记里",
-        "paf": "paf 全空：两半归因强度都在 IHME 授权门后，页面按「暂无可靠来源」显示，"
-               "不做归因分数榜",
+        "paf": "exposure 每行带年龄标化 PAF（GBD 2023 Deaths，paf_basis 写明口径；×100 的百分数，"
+               "负值＝保护方向，实测值域 −7.33–100.00）。PAF 是人群归因分数，与 genetic 层的 "
+               "OR/p 不是同一种数，两榜不混排；brain 无暴露行，连 PAF 一起缺席",
     })
     return {
         **out,

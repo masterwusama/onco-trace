@@ -50,7 +50,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from onco_api.app import create_app  # noqa: E402
 from onco_api.config import load_settings  # noqa: E402
 
-# §二 那六处空态在 18 病上的落点（裁定原文，不是查出来的）
+# §二 那四处空态在 18 病上的落点（裁定原文，不是查出来的）
 CODES = ["bladder", "brain", "breast_female", "cervix", "colorectum", "esophagus", "kidney",
          "leukemia", "liver", "lung", "myeloma", "nhl", "ovary", "pancreas", "prostate",
          "stomach", "thyroid", "uterus"]
@@ -59,8 +59,8 @@ CODES = ["bladder", "brain", "breast_female", "cervix", "colorectum", "esophagus
 LIST_COLS = ("code", "name_zh", "name_en", "category", "sex", "icd10", "icdo3",
              "mondo_id", "mondo_name", "ncit_id", "ot_node")
 NO_ZH_SYMPTOM = ["bladder", "brain", "cervix", "esophagus", "kidney", "liver", "nhl",
-                 "ovary", "prostate", "stomach", "thyroid"]          # §二.4：11 病
-NO_STAGE_SURVIVAL = ["leukemia"]                                     # §二.6
+                 "ovary", "prostate", "stomach", "thyroid"]          # §二.2：11 病
+NO_STAGE_SURVIVAL = ["leukemia"]                                     # §二.4
 NO_EXPOSURE = ["brain"]                                              # CRA 里整档缺席
 THIN_EXPOSURE = 3                                                    # ≥3 那条判据线
 HEME = ["leukemia", "myeloma", "nhl"]                                # category='heme'
@@ -84,18 +84,16 @@ SURV_SERIES = ("(SELECT COUNT(DISTINCT w.year) FROM survival w "
                "WHERE w.disease_id=survival.disease_id AND w.stage=survival.stage "
                f"AND w.window_label=survival.window_label AND w.{NR})")
 
-# 逐病空态的把手：文案前 13 字。九条规则在这一个长度上两两不同（下面有断言），
+# 逐病空态的把手：文案前 13 字。七条规则在这一个长度上两两不同（下面有断言），
 # 所以拿它分组既能认规则又不用抄整句文案——改了字也不会红一片
 G_ZH = "这一病没有现成的中文症状清"
 G_FREQ = "症状频率带空缺：PDQ 的"
-G_PAF = "危险因素只有清单与位点级效"
 G_NO_EXPOSURE = "这一病在 GBD 的暴露清"
 G_THIN = "可干预暴露只有 1–2 条"
-G_CN_DEATH_AGE = "中国没有死亡年龄组：WHO"
 G_NO_STAGE = "这一病没有分期别的五年生存"
 G_ANATOMY_HEME = "这一病没有亚部位下钻：它是"
 G_ANATOMY_OTHER = "这一病没有亚部位下钻：库内"
-DISEASE_GAP_KEYS = [G_ZH, G_FREQ, G_PAF, G_NO_EXPOSURE, G_THIN, G_CN_DEATH_AGE,
+DISEASE_GAP_KEYS = [G_ZH, G_FREQ, G_NO_EXPOSURE, G_THIN,
                     G_NO_STAGE, G_ANATOMY_HEME, G_ANATOMY_OTHER]
 
 
@@ -287,7 +285,8 @@ def check_meta(c: Checks, cl: TestClient, db) -> None:
                  " WHERE role='exposure') AS `exposure_nodes`, "
                  "COUNT(*) AS `rows` FROM disease_risk_factor"),
         ("stat", "SELECT COUNT(*) AS `any`, SUM(region='China' AND year=0) AS `cn_point`, "
-                 "SUM(region='China' AND year>0) AS `cn_trend`, "
+                 "SUM(region='China' AND year>0 AND metric NOT IN"
+                 " ('age_case_pct','age_death_pct')) AS `cn_trend`, "
                  "SUM(metric IN ('new_case_rate','death_rate')) AS `us_series`, "
                  "SUM(metric='age_case_pct') AS `age_case`, SUM(metric='age_death_pct') AS `age_death`, "
                  "SUM(metric='age_death_pct' AND region='China') AS `age_death_cn`, "
@@ -316,9 +315,10 @@ def check_meta(c: Checks, cl: TestClient, db) -> None:
         c.eq("meta", f"{key} 的每个响应字段都对到了直查",
              sorted(set(block) - {"key", "label", "note", "table"}), sorted(want))
 
-    c.eq("meta", "中国死亡年龄组实测零行（§二.1 的空态依据）", dims["stat"]["age_death_cn"], 0)
-    c.eq("meta", "PAF 实测零行（§二.2）", dims["risk"]["paf"], 0)
-    c.eq("meta", "症状频率带实测零行（§二.3）", dims["symptom"]["freq"], 0)
+    c.eq("meta", "中国死亡年龄组实测 319 行（2026-09-10 授权取数补上，§一 死亡年龄组行）",
+         dims["stat"]["age_death_cn"], 319)
+    c.eq("meta", "PAF 实测 71 行全带值（§一 危险因素归因强度行）", dims["risk"]["paf"], 71)
+    c.eq("meta", "症状频率带实测零行（§二.1）", dims["symptom"]["freq"], 0)
     c.eq("meta", "试验行数不等于试验数", (dims["trial"]["rows"], dims["trial"]["nct"]),
          (int(_col(db, "SELECT COUNT(*) FROM trial")), int(_col(db, "SELECT COUNT(DISTINCT nct_id) FROM trial"))))
     c.ok("meta", "药名去重数不大于行数", dims["drug"]["names"] <= dims["drug"]["rows"])
@@ -337,7 +337,7 @@ def check_meta(c: Checks, cl: TestClient, db) -> None:
          int(_col(db, "SELECT COUNT(DISTINCT job_name) FROM etl_job_log")))
 
     g = {x["dim"] + x["scope"] for x in d["gaps"]}
-    c.ok("meta", "整维级空态含叙述段（§二.5）", "narrativedimension" in g)
+    c.ok("meta", "整维级空态含叙述段（§二.3）", "narrativedimension" in g)
     c.ok("meta", "整维级空态含两处中文名（§五.3）",
          {"anatomycolumn", "riskcolumn"} <= g)
 
@@ -409,7 +409,9 @@ def _check_measures(c: Checks, code: str, dims: dict, did: int, db) -> None:
                  "paf": _sid(db, did, "disease_risk_factor", "paf IS NOT NULL")},
         "stat": {"any": _sid(db, did, "stat_fact", NR),
                  "cn_point": _sid(db, did, "stat_fact", f"region='China' AND year=0 AND {NR}"),
-                 "cn_trend": _sid(db, did, "stat_fact", f"region='China' AND year>0 AND {NR}"),
+                 "cn_trend": _sid(db, did, "stat_fact",
+                                  f"region='China' AND year>0 AND metric NOT IN"
+                                  f" ('age_case_pct','age_death_pct') AND {NR}"),
                  "us_series": _sid(db, did, "stat_fact",
                                    f"metric IN ('new_case_rate','death_rate') AND {NR}"),
                  "age_case": _sid(db, did, "stat_fact", f"metric='age_case_pct' AND {NR}"),
@@ -957,7 +959,7 @@ def _vocab_symptoms(c: Checks, cl: TestClient, db, code: str, did: int, row: dic
          (sum(1 for x in per_src.values() for r in x if r["name_lang"] == "en"),
           sum(1 for x in per_src.values() for r in x if r["name_lang"] == "zh")),
          (d["measures"]["en"], d["measures"]["zh"]))
-    c.eq(g, "频率带整列为空（§二.3 建而不填，页面按空态显示）",
+    c.eq(g, "频率带整列为空（§二.1 建而不填，页面按空态显示）",
          {x["freq_band"] for b in d["sources"] for x in b["items"]}, {None})
     _shape_ok(c, g, "症状行键集合就是 DDL 那几列", [x for b in d["sources"] for x in b["items"]],
               SYMPTOM_COLS, ())
@@ -1039,8 +1041,13 @@ def _vocab_risk(c: Checks, cl: TestClient, db, code: str, did: int, row: dict) -
     c.eq(g, "两层的节点 id 互斥（同一个节点不同时是位点和暴露）",
          len({int(x["factor"]["id"]) for x in d["genetic"]["items"]}
              & {int(x["factor"]["id"]) for x in d["exposure"]["items"]}), 0)
-    c.eq(g, "paf 一列在榜与清单上都空（§二.2 整维级的坑）",
-         {x["paf"] for x in [*d["genetic"]["items"], *d["exposure"]["items"]]}, {None})
+    c.ok(g, "exposure 每行都带 paf（GBD 2023 年龄标化；brain 无暴露行则这层空转）",
+         None not in {x["paf"] for x in d["exposure"]["items"]})
+    c.eq(g, "genetic 榜的 paf 仍全空（OR/p 不是 PAF 的口径，两层不混排）",
+         {x["paf"] for x in d["genetic"]["items"]}, {None} if gen else set())
+    c.eq(g, "paf_basis 在暴露清单上就是那一句固定口径",
+         {x["paf_basis"] for x in d["exposure"]["items"]},
+         {"GBD 2023 Deaths 年龄标化 2021"} if exp else set())
     _shape_ok(c, g, "关联行没有冒出归因分数键",
               [*d["genetic"]["items"], *d["exposure"]["items"]], RISK_ASSOC_COLS, ("factor",))
     _shape_ok(c, g, "节点行就是 risk_factor 那四列",
@@ -1587,28 +1594,25 @@ def check_gaps(c: Checks, cl: TestClient, db) -> None:
         for g in item["gaps"]:
             by_rule.setdefault(g["text"][:13], []).append(code)
 
-    c.eq("gaps", "九条规则的把手互不相同（分组不会把两条并成一条）",
+    c.eq("gaps", "七条规则的把手互不相同（分组不会把两条并成一条）",
          len({*DISEASE_GAP_KEYS}), len(DISEASE_GAP_KEYS))
     # 冒出一条没列出的文案 = 有人往规则表里加了判据而这一台不知道
-    c.eq("gaps", "18 病收到的空态全在列出的九条里", set(by_rule) - set(DISEASE_GAP_KEYS), set())
+    c.eq("gaps", "18 病收到的空态全在列出的七条里", set(by_rule) - set(DISEASE_GAP_KEYS), set())
 
-    c.eq("gaps", "无中文症状清单的病 = §二.4 那 11 个", sorted(by_rule.get(G_ZH, [])),
+    c.eq("gaps", "无中文症状清单的病 = §二.2 那 11 个", sorted(by_rule.get(G_ZH, [])),
          sorted(NO_ZH_SYMPTOM))
-    c.eq("gaps", "无分期别生存率的病 = §二.6 那一个", sorted(by_rule.get(G_NO_STAGE, [])),
+    c.eq("gaps", "无分期别生存率的病 = §二.4 那一个", sorted(by_rule.get(G_NO_STAGE, [])),
          sorted(NO_STAGE_SURVIVAL))
     c.eq("gaps", "CRA 暴露清单里零行的病", sorted(by_rule.get(G_NO_EXPOSURE, [])),
          sorted(NO_EXPOSURE))
-    c.eq("gaps", "PAF 空的病 = 全部 18 病（§二.2 是整维级的坑）", len(by_rule.get(G_PAF, [])), 18)
-    c.eq("gaps", "频率带空的病 = 全部 18 病（§二.3）", len(by_rule.get(G_FREQ, [])), 18)
-    c.eq("gaps", "中国死亡年龄组零行的病 = 全部 18 病（§一、§二.1）",
-         len(by_rule.get(G_CN_DEATH_AGE, [])), 18)
+    c.eq("gaps", "频率带空的病 = 全部 18 病（§二.1）", len(by_rule.get(G_FREQ, [])), 18)
 
     thin = sorted(by_rule.get(G_THIN, []))
     want_thin = sorted(r["code"] for r in _q(
         db, "SELECT d.code FROM disease d JOIN disease_risk_factor r ON r.disease_id=d.id "
             "WHERE r.role='exposure' GROUP BY d.code HAVING COUNT(*) < %s", (THIN_EXPOSURE,)))
     c.eq("gaps", "低于 ≥3 判据线的病（17 病有行 − 10 病达线）", thin, want_thin)
-    c.eq("gaps", "达到 ≥3 判据线的病数与 §二.2 一致",
+    c.eq("gaps", "达到 ≥3 判据线的病数与 §一 危险因素清单行一致",
          18 - len(set(thin) | set(NO_EXPOSURE)), 10)
 
     heme_gap = sorted(by_rule.get(G_ANATOMY_HEME, []))

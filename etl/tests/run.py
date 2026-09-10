@@ -45,7 +45,7 @@ from onco_etl import raw
 from onco_etl.load import anatomy, research, risks, symptoms  # noqa: E402
 from onco_etl.targets import TARGETS, ot_node  # noqa: E402
 from onco_etl.probes import mondo  # noqa: E402
-from onco_etl.probes import gbd_cra, gwas_catalog  # noqa: E402
+from onco_etl.probes import gbd_cra, gbd_results, gwas_catalog  # noqa: E402
 from onco_etl.probes import nci_pdq_html, who_factsheet, wikidata  # noqa: E402
 from onco_etl.probes import seer_statfacts as seer  # noqa: E402
 
@@ -234,8 +234,8 @@ def check_symptoms(c: Checks) -> None:
 
 def check_risks(c: Checks) -> None:
     """危险因素装载的口径。输入是合成的 Assoc / Factor 与手搓的 Risk 表：这一维的坑全在
-    "一行该是什么"与"哪些行算这个病"，跟上游字节无关，而两份真归档（GWAS 整包 71 MB、
-    CRA 交叉表）都不进仓库。真归档里的数由装载器跑库时自己报出来核对。"""
+    "一行该是什么"与"哪些行算这个病"，跟上游字节无关，而三份真归档（GWAS 整包 71 MB、
+    CRA 交叉表、GBD Results 的两份 ZIP）都不进仓库。真归档里的数由装载器跑库时自己报出来核对。"""
     def a(**kw):
         base = dict(code="lung", tier="main", tail="MONDO_0005238", trait="lung cancer",
                     gene="CHRNA5", snps="rs1", risk_allele="rs1-A", chr_id="15",
@@ -327,10 +327,31 @@ def check_risks(c: Checks) -> None:
         return gbd_cra.Factor(**base)
 
     f = risks.cra_links([factor()], {("exposure", "smoking"): 91}, ids, 7, 71, ["lung"])[0]
-    c.eq("cra 行只有清单没有强度",
+    c.eq("cra 行 GWAS 专属列留空",
          (f["role"], f["uri_tier"], f["trait_uri"], f["snps"], f["or_beta"], f["pvalue_mlog"]),
          ("exposure", None, "GBD:426", "", None, None))
     c.eq("cra 行表型名是 GBD Cause 名", f["trait_label"], "Lung cancer")
+    # PAF 填充：×100 落百分比两位小数、负值（保护方向）照落不折、没对上的行两列留 NULL
+    c.eq("cra 行没给 paf 映射两列留 NULL", (f["paf"], f["paf_basis"]), (None, None))
+    pafed = risks.cra_links([factor()], {("exposure", "smoking"): 91}, ids, 7, 71, ["lung"],
+                            {(426, 110): 0.6483})[0]
+    c.eq("cra 行 paf 按整数 id 对上并放大成百分比",
+         (pafed["paf"], pafed["paf_basis"]), (64.83, risks.PAF_BASIS))
+    c.eq("cra 行 paf 负值照落", risks.cra_links(
+        [factor()], {("exposure", "smoking"): 91}, ids, 7, 71, ["lung"],
+        {(426, 110): -0.07332547080838284})[0]["paf"], -7.33)
+    c.eq("cra 行映射里没有的对留 NULL", risks.cra_links(
+        [factor()], {("exposure", "smoking"): 91}, ids, 7, 71, ["lung"],
+        {(999, 999): 0.5})[0]["paf"], None)
+    # CSV 列是字符串，映射的键必须按整数收才与 Factor.assoc_key 同一个码空间
+    c.eq("paf 映射键按字符串列整数化", risks.paf_map(gbd_results.GbdPayload(
+        paf=[{"cause_id": "426", "rei_id": "110", "val": "0.6483"}])),
+        {(426, 110): 0.6483})
+    try:
+        risks.check_paf([factor()], {(426, 110): 0.5})
+        c.ok("check_paf 两边相等放行", True, "")
+    except SystemExit as e:
+        c.ok("check_paf 两边相等放行", False, str(e))
     c.eq("cra 键按病因×REI 构造",
          len({factor(rei_id=110).assoc_key(), factor(rei_id=111).assoc_key()}), 2)
     c.eq("cra 病因不同才算两条",
@@ -351,6 +372,8 @@ def check_risks(c: Checks) -> None:
            lambda: risks.check_cra([
                factor(rei_id=i, rei_name=n)
                for i, n in enumerate(sorted(gbd_cra.REI_EYEBALL))]), "条数漂移")
+    aborts("GBD 的 PAF 对不上 CRA 就中止",
+           lambda: risks.check_paf([factor()], {(426, 111): 0.5}), "对不上")
 
 
 def check_research(c: Checks) -> None:

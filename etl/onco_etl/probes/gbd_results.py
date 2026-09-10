@@ -1,32 +1,47 @@
-"""GBD 批量入口探针：判"不登录、不点界面，能不能把数值取回来"。
+"""GBD 结果数值探针：授权后的取数路——任务在浏览器里人工提交，轮询与下载匿名可编程。
 
-判据只有一条，但结论必须分两半报，混在一起就只剩"GBD 能用 / 不能用"这种没用的话：
+B3/B4 时这一维裁成 paused：词表匿名可取（codebook ZIP 仍在 2024-05-16/ 归档里，
+`gbd_cra._rei_tree` 还跨源读它），数值四路全 401。2026-09-10 注册 IHME 免费非商用
+账号（Azure AD B2C，scope `.../data-api/data.read`）实测走通，整条路分两半：
 
-  A 设计覆盖——GBD 的词表里有没有 18 病 × 中国 × ≥5 年 × ≥10 年龄组 × 双性别。
-    这一半匿名可测，证据是 Results Tool 自己在界面上挂着的那份 codebook ZIP
-    （`/sites/default/files/ihme_query_tool/` 下的静态文件不在登录门内）。
-  B 数值入口——真正的估计值能不能匿名编程取回。实测三条路都堵着：
-    GHDX 记录页把每个文件的 href 换成 `/download-access/login`（页面本身 200，
-    文件名与字节数都读得到，就是不给链接）；Results Tool 的查询接口要 Azure AD B2C
-    换来的 token（scope `.../data-api/data.read`）；界面前还有一层 Cloudflare 机器人校验。
+  **提交（一次性、人工辅助）**——`php/download.php` 只认浏览器上下文里的 Bearer
+  token：Python requests 与 curl_cffi（多档浏览器指纹）一律 401
+  `Unable to parse authentication token`，是 Cloudflare 按客户端特征歧视，不是
+  token 本身的问题。所以两个下载任务是在浏览器里提交的，凭据在 `.env` 的
+  IHME_USER/IHME_PASS。任务按参数哈希缓存（poll 响应的 `hash` 字段就是 taskID），
+  同一组参数永远指向同一份产物——taskID 写成下面的常量，"提交"这一步于是固化成
+  仓库资产，重放不再需要登录。
+  **轮询 + 下载（永久匿名）**——`php/get_download_result.php?taskID=` 与
+  `dl.healthdata.org` 两个路由实测匿名 200，本模块的 online 分支只走这一半。
 
-所以这一维的裁定写成"词表达标、数值 0/18"。`diseases_covered` 按真正能落库的算，
-词表那一半进 message 与 sample——覆盖度矩阵要的是可用数据，不是设计意图。
+两个任务各回一个 ZIP（单 CSV 成员 + citation.txt）：
 
-受保护页是这里最容易踩的坑：某些 record 返回 HTTP 200，正文却是"Protected Page —
-Enter password"。按状态码判可用会把它记成"页面正常、只是没有文件"，把一个授权问题
-说成源缺数据。认标题不认状态码，离线重放时也只有一个标题可认。
+  `AGE_TASK` 19 病因（18 病 + Neoplasms 总档 410）× 中国 × 2021 × Deaths ×
+  Number × 20 年龄档 × 三性别，951 行。410/Both 在场 20 档合计
+  2,401,092.519546612，与单独取的全年龄单行逐位相等——"档内求和＝全年龄总量"
+  的锚，`load/stats.py` 按档算死亡构成比时分母的合法性全靠它。
+  `PAF_TASK` 18 病因 × 33 REI × 中国 × 2021 × Deaths，213 行＝3 组各 71 对
+  （Number/All ages、Percent/All ages、Percent/Age-standardized）。PAF 取
+  Percent + Age-standardized 那 71 行：(cause_id, rei_id) 对与 A2 CRA 骨架
+  （`gbd_cra.EYEBALL` 合计 71）逐对相等，脑 0 条两边一致。
+
+值的三个事实，都是这批数给的教训：
+
+  PAF 可以为负——GBD 按暴露反事实算，保护方向的归因是负数（实测 3 行，最小
+  -0.0733），Cervical|Unsafe sex 恰为 1.0。`paf` 列是有符号 decimal，负值照落。
+  匹配只按 (cause_id, rei_id) 数字键，不按名字——两份源的名字写法一致是巧合，
+  不是键。
+  GBD 的 sex id 是 3=Both/1=Male/2=Female，与 GCO 那套 0/1/2 不是同一码空间，
+  `load/stats.py` 里两套映射分开声明。
 """
 from __future__ import annotations
 
 import csv
 import io
-import re
-import time
+import json
 import zipfile
+from dataclasses import dataclass, field
 from pathlib import Path
-
-import openpyxl
 
 from .. import raw
 from ..fetch import fetch
@@ -34,272 +49,220 @@ from ..targets import TARGETS
 from .result import ProbeResult
 
 SOURCE = "gbd_results"
-DATASET = "gbd21-codebook"
-CODEBOOK_NAME = "IHME_GBD_2021_CODEBOOK.zip"
-CODEBOOK = (
-    "https://ghdx.healthdata.org/sites/default/files/ihme_query_tool/" + CODEBOOK_NAME
-)
-INDEX = "https://ghdx.healthdata.org/gbd-2023"
-GHDX = "https://ghdx.healthdata.org"
-
+DATASET = "gbd2023-deaths-paf"
 CRITERIA = (
-    "存在可匿名、可编程调用的批量入口，按 18 病 × 中国 × ≥5 年 × ≥10 年龄组 × 双性别"
-    "取到 incidence/deaths 数值；词表覆盖与数值入口分别裁定"
+    "18 病 × 中国 × 2021 × 20 年龄档的死亡数、33 可干预暴露 × 病因对的年龄标化 PAF，"
+    "经 IHME 账号授权取回且轮询/下载可匿名重放；任务提交是一次性浏览器动作"
 )
 
-# 这一维真正要落库的四个度量。GBD 词表里还有 YLLs/DALYs/HALE/人口学等 17 个，
-# 不在判据内但一起数着——换一个度量就可能换到覆盖，那是 B7 裁定要用的信息。
-NEED_MEASURES = ("Deaths", "Incidence", "Prevalence", "YLDs (Years Lived with Disability)")
+# poll 与下载都实测匿名 200；提交侧见模块注释
+POLL = "https://vizhub.healthdata.org/gbd-results/php/get_download_result.php"
+API_VERSION = "2023.0.0"
 
-LOGIN_HREF = "/download-access/login"
+AGE_TASK = "f3d78e0182a78b31815b277aa4eb8921"
+PAF_TASK = "03f12fcf29faf2d602fa34634bbab911"
+ZIP_GLOB = "IHME-GBD_2023_DATA-*.zip"
 
-FILE_RE = re.compile(
-    r'<a href="(?P<href>[^"]+)"\s+type="(?P<ctype>[^;"]+);\s*length=(?P<bytes>\d+)"\s*'
-    r'title="(?P<name>[^"]+)">',
-    re.I,
-)
-RECORD_RE = re.compile(r'href="(/record/[^"#?]+)"')
-DOI_RE = re.compile(r"https?://doi\.org/(10\.[^\s\"<]+)", re.I)
+NEOPLASMS = "410"
+# 410/Both 在场 20 档的合计（年龄组 ZIP 里没有全年龄行，这个数来自单独取的
+# 全年龄单行 probe_test.zip）——防"ZIP 换了别年版还静默落库"的锚
+BAND_SUM_ANCHOR = 2401092.519546612
 
-
-def _parse_record(html: str) -> dict:
-    title = re.search(r"<title>(.*?)</title>", html, re.S | re.I)
-    files = [
-        {
-            "name": m["name"],
-            "bytes": int(m["bytes"]),
-            "type": m["ctype"].rsplit("/", 1)[-1],
-            # 只留"是否被换成登录链接"这一位事实：真被门挡住的行 href 全是同一个串，
-            # 把 22 份一模一样的字符串存进 sample 没有信息量
-            "gated": LOGIN_HREF in m["href"],
-        }
-        for m in FILE_RE.finditer(html)
-    ]
-    doi = DOI_RE.search(html)
-    return {
-        "protected": bool(title and "protected page" in title.group(1).lower()),
-        "files": files,
-        "doi": doi.group(1) if doi else "",
-    }
+# CSV 的 sex_id 全是字符串，声明性别到 GBD 码的映射也按字符串给
+GBD_SEX = {"both": "3", "male": "1", "female": "2"}
 
 
-def _codebook_version(body: bytes) -> str:
-    m = re.search(r"Y(\d{4})M(\d{2})D(\d{2})", " ".join(zipfile.ZipFile(io.BytesIO(body)).namelist()))
-    if not m:
-        return ""
-    return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+def _zip_name(tid: str) -> str:
+    return f"IHME-GBD_2023_DATA-{tid[:8]}-1.zip"
 
 
-def _codebook_tables(body: bytes) -> tuple[dict, dict[str, list[dict]]]:
-    """codebook ZIP 里两份文件：横向词表 CSV + 四张层级 XLSX。
-
-    CSV 是"每一列各自一个词表、长度互不相等、短列留空"的形状，
-    所以取值只能按列切、跳过空串，不能当普通表 zip()——那样所有词表都会被截到最短那列的长度。
-    """
+def _csv_rows(body: bytes) -> list[dict]:
+    """ZIP → 行 dict 列表。每个 ZIP 恰好一个 CSV 成员（另一个是 citation.txt）。"""
     z = zipfile.ZipFile(io.BytesIO(body))
-    csv_name = next(n for n in z.namelist() if n.upper().endswith(".CSV"))
-    rows = list(csv.reader(io.StringIO(z.read(csv_name).decode("utf-8-sig", "replace"))))
-    hdr = [c.strip() for c in rows[0]]
+    name = next(n for n in z.namelist() if n.lower().endswith(".csv"))
+    return list(csv.DictReader(io.StringIO(z.read(name).decode("utf-8-sig", "replace"))))
 
-    def column(header: str) -> list[str]:
-        i = hdr.index(header)
-        return [r[i].strip() for r in rows[2:] if len(r) > i and r[i].strip()]
 
-    vocab = {
-        "measures": column("measure_name"),
-        "sexes": column("sex_label"),
-        "age_groups": column("age_group_name"),
-        "years": [y for y in column("year_id") if y.isdigit()],
-        "locations": dict(zip(column("location_id"), column("location_name"))),
-    }
-    xlsx_name = next(n for n in z.namelist() if n.upper().endswith(".XLSX"))
-    wb = openpyxl.load_workbook(io.BytesIO(z.read(xlsx_name)), read_only=True, data_only=True)
-    trees: dict[str, list[dict]] = {}
-    for sheet in ("Cause Hierarchy", "REI Hierarchy"):
-        it = wb[sheet].iter_rows(values_only=True)
-        h = [str(c) for c in next(it)]
-        trees[sheet] = [dict(zip(h, r)) for r in it if r and r[0] not in (None, "")]
-    return vocab, trees
+@dataclass
+class GbdPayload:
+    """取数这一趟的产出。`blocked` 非空表示没取成，探针原样报回去。"""
+
+    age: list[dict] = field(default_factory=list)
+    paf: list[dict] = field(default_factory=list)
+    paf_total: int = 0  # paf ZIP 全部行数（3 组 71 对），rows_seen 描述归档要按它算
+    blocked: ProbeResult | None = None
+    key_dir: Path | None = None
+    version: str = "unknown"
+    size: int = 0
+    sha: str = ""
+    ms: int = 0
+    reach: str = "direct"
+    http: int | None = None
+
+
+def load_payload(offline: bool) -> GbdPayload:
+    pl = GbdPayload()
+    reach = "offline" if offline else "direct"
+    ms_total = 0
+    http: int | None = None
+
+    if offline:
+        key_dir = raw.newest_dir(SOURCE, ZIP_GLOB)
+        paths = [
+            (key_dir / _zip_name(tid)) if key_dir else None for tid in (AGE_TASK, PAF_TASK)
+        ]
+        if not all(p and p.is_file() for p in paths):
+            raise SystemExit(
+                f"离线重放需要先有一份归档：data/raw/{SOURCE}/*/"
+                f"IHME-GBD_2023_DATA-{{{AGE_TASK[:8]}|{PAF_TASK[:8]}}}-1.zip 不齐")
+        bodies = [p.read_bytes() for p in paths]
+        version = key_dir.name
+    else:
+        bodies = []
+        for tid in (AGE_TASK, PAF_TASK):
+            pr = fetch(f"{POLL}?taskID={tid}", timeout=(10, 60), max_bytes=200_000,
+                       headers={"Accept": "application/json"})
+            ms_total += pr.latency_ms
+            if pr.reachability == "proxy":
+                reach = "proxy"
+            if not pr.ok:
+                pl.blocked = ProbeResult(
+                    verdict="dead" if pr.status in (404, 410) else "blocked",
+                    message=f"{POLL}?taskID={tid} → {pr.status or pr.reachability}：{pr.note}",
+                    criteria=CRITERIA, dataset_code=DATASET, reachability=pr.reachability,
+                    http_status=pr.status, latency_ms=ms_total)
+                return pl
+            try:
+                task = json.loads(pr.body)
+            except ValueError:
+                pl.blocked = ProbeResult(
+                    verdict="dead",
+                    message=f"{POLL}?taskID={tid} 回的不是 JSON——vizhub 改了轮询路由，"
+                            "整个匿名重放的那一半要重判",
+                    criteria=CRITERIA, dataset_code=DATASET, reachability=reach,
+                    http_status=pr.status, latency_ms=ms_total)
+                return pl
+            if task.get("state") != "success" or not task.get("urls"):
+                pl.blocked = ProbeResult(
+                    verdict="dead",
+                    message=f"任务 {tid} 状态是 {task.get('state')!r}——IHME 清了任务缓存，"
+                            "要在浏览器里重新提交一次（凭据 .env 的 IHME_USER/IHME_PASS），"
+                            "把新 taskID 换进模块常量",
+                    criteria=CRITERIA, dataset_code=DATASET, reachability=reach,
+                    http_status=pr.status, latency_ms=ms_total)
+                return pl
+            zr = fetch(task["urls"][0], timeout=(10, 120), max_bytes=20_000_000)
+            ms_total += zr.latency_ms
+            http = zr.status
+            if zr.reachability == "proxy":
+                reach = "proxy"
+            if not zr.ok or not zr.body or zr.truncated:
+                pl.blocked = ProbeResult(
+                    verdict="dead" if zr.status in (404, 410) else "blocked",
+                    message=f"{task['urls'][0]} → {zr.status or zr.reachability}：{zr.note}"
+                            f" declared={zr.declared_bytes} got={len(zr.body)}"
+                            f" truncated={zr.truncated}",
+                    criteria=CRITERIA, dataset_code=DATASET, reachability=zr.reachability,
+                    http_status=zr.status, latency_ms=ms_total)
+                return pl
+            bodies.append(zr.body)
+        version = API_VERSION
+        key_dir = raw.archive_dir(SOURCE, version)
+        for tid, b in zip((AGE_TASK, PAF_TASK), bodies):
+            (key_dir / _zip_name(tid)).write_bytes(b)
+
+    all_paf = _csv_rows(bodies[1])
+    pl.age = _csv_rows(bodies[0])
+    pl.paf = [r for r in all_paf
+              if r["metric_name"] == "Percent" and r["age_name"] == "Age-standardized"]
+    pl.paf_total = len(all_paf)
+    pl.key_dir, pl.version, pl.size = key_dir, version, sum(len(b) for b in bodies)
+    pl.sha = raw.sha256_bytes(b"".join(bodies))
+    pl.ms, pl.reach, pl.http = ms_total, reach, http
+    return pl
 
 
 def probe(offline: bool = False) -> ProbeResult:
-    reach = "offline" if offline else "direct"
-    http: int | None = None
-    ms_total = 0
-    key_dir: Path | None = None
+    pl = load_payload(offline)
+    if pl.blocked:
+        return pl.blocked
+    age, paf = pl.age, pl.paf
 
-    if offline:
-        key_dir = raw.newest_dir(SOURCE, CODEBOOK_NAME)
-        cb_path = key_dir / CODEBOOK_NAME if key_dir else None
-        if not cb_path or not cb_path.is_file():
-            raise SystemExit(
-                f"离线重放需要先有一份归档：data/raw/{SOURCE}/*/{CODEBOOK_NAME} 不存在"
-            )
-        cb = cb_path.read_bytes()
-        version = key_dir.name
-        sha = raw.sha256_file(cb_path)
-    else:
-        res = fetch(CODEBOOK, timeout=(10, 120))
-        ms_total += res.latency_ms
-        http = res.status
-        if res.reachability == "proxy":
-            reach = "proxy"
-        if not res.ok or not res.body:
-            return ProbeResult(
-                verdict="dead" if res.status in (404, 410) else "blocked",
-                message=f"{CODEBOOK} → {res.status or res.reachability}：{res.note}",
-                criteria=CRITERIA,
-                dataset_code=DATASET,
-                reachability=res.reachability,
-                http_status=res.status,
-                latency_ms=res.latency_ms,
-            )
-        cb = res.body
-        # 版本取自 ZIP 里成员文件名的日期戳，不取自 URL：URL 里压根没有日期，
-        # 而 IHME 会在同一个 URL 上换季版，Y2024M05D16 才是"这一版词表"的唯一标识
-        version = _codebook_version(cb) or "unknown"
-        sha = raw.sha256_bytes(cb)
-    release_date = None if version == "unknown" else version
-
-    vocab, trees = _codebook_tables(cb)
-    causes = {
-        str(int(r["Cause ID"])): str(r["Cause Name"]) for r in trees["Cause Hierarchy"]
-    }
-    l4: dict[str, list[str]] = {}
-    for r in trees["Cause Hierarchy"]:
-        if r.get("Level") == 4 and r.get("Parent ID") is not None:
-            l4.setdefault(str(int(r["Parent ID"])), []).append(str(r["Cause Name"]))
-
-    # 反向核对：声明在 targets.py 的 gbd_cause 必须真的存在于这一版词表。
-    # 病因 ID 被上游回收时，落库会写出挂在空节点上的疾病——那比少一个病严重得多。
-    missing = [t.code for t in TARGETS if t.gbd_cause not in causes]
-    n_sub = sum(len(l4.get(t.gbd_cause, [])) for t in TARGETS)
-
-    years = sorted(int(y) for y in vocab["years"])
-    china = [i for i, n in vocab["locations"].items() if n == "China"]
-    have_measures = [m_ for m_ in NEED_MEASURES if m_ in vocab["measures"]]
-    ages = set(vocab["age_groups"])
-    one_yr = sum(1 for a in ages if a.isdigit())
-
-    # ---- 数值入口：整轮 GBD 2023 的 record 全走一遍，不抽样 ----
-    bodies: dict[str, bytes] = {}
-    records: dict[str, dict] = {}
-    if offline:
-        for p in sorted(key_dir.glob("record__*.html")):
-            records[p.stem[len("record__"):]] = _parse_record(
-                p.read_text(encoding="utf-8", errors="replace")
-            )
-    else:
-        ir = fetch(INDEX, timeout=(10, 60))
-        ms_total += ir.latency_ms
-        if ir.reachability == "proxy":
-            reach = "proxy"
-        if not ir.ok:
-            return ProbeResult(
-                verdict="dead" if ir.status in (404, 410) else "blocked",
-                message=f"词表已取回但 record 索引 {INDEX} → {ir.status or ir.reachability}",
-                criteria=CRITERIA,
-                dataset_code=DATASET,
-                reachability=ir.reachability,
-                http_status=ir.status,
-                latency_ms=ms_total,
-                raw_path=None,
-                upstream_version=version,
-                release_date=release_date,
-                release_bytes=len(cb),
-                release_sha256=sha,
-            )
-        for slug in sorted(set(RECORD_RE.findall(ir.text))):
-            rr = fetch(GHDX + slug, timeout=(10, 60))
-            ms_total += rr.latency_ms
-            if rr.reachability == "proxy":
-                reach = "proxy"
-            if not rr.ok:
-                continue
-            records[slug] = _parse_record(rr.text)
-            bodies[slug] = rr.body
-            time.sleep(0.3)
-
-    files = [f for rec in records.values() for f in rec["files"]]
-    gated = [f for f in files if f["gated"]]
-    open_files = [f for f in files if not f["gated"]]
-    protected = [s for s, rec in records.items() if rec["protected"]]
-    empty = [s for s, rec in records.items() if not rec["protected"] and not rec["files"]]
-    gated_bytes = sum(f["bytes"] for f in gated)
-
-    if not offline:
-        key_dir = raw.archive_dir(SOURCE, version)
-        (key_dir / CODEBOOK_NAME).write_bytes(cb)
-        for slug, b in bodies.items():
-            name = "record__" + slug.removeprefix("/record/").replace("/", "__") + ".html"
-            (key_dir / name).write_bytes(b)
-
-    usable = len(open_files)
-    if not usable:
-        # 数值匿名一条都取不到，这一维就还没通；词表缺哪几个病已经在 message 里点名了
-        verdict = "blocked"
-    else:
-        verdict = "ok" if not missing else "partial"
-    span = f"{years[0]}–{years[-1]}（{len(years)} 个值）" if years else "无"
-    msg = (
-        f"词表达标：{len(TARGETS) - len(missing)}/{len(TARGETS)} 病有对应病因档"
-        f"（{len(TARGETS)} 档下面合计另带 {n_sub} 个 L4 亚档，逐个列在 sample 里）；"
-        f"中国=location_id {china[0] if china else '?'}，词表含 {len(vocab['locations'])} 个地点；"
-        f"年度 {span}；性别 {'/'.join(vocab['sexes'])}；"
-        f"年龄组词表 {len(ages)} 档（其中 1 岁一档 {one_yr} 个）；"
-        f"需要的度量 {len(have_measures)}/{len(NEED_MEASURES)} 个在列"
-    )
+    # 口径断言：一行混进来就中止，不按"多数行对"猜
+    for r in age:
+        if (r["measure_name"], r["metric_name"], r["year"], r["location_id"],
+                r["population_group_id"]) != ("Deaths", "Number", "2021", "6", "1"):
+            raise SystemExit(f"年龄组 ZIP 里混进口径外的行：{r}")
+    for r in paf:
+        if (r["measure_name"], r["year"], r["location_id"], r["sex_id"]) != (
+                "Deaths", "2021", "6", "3"):
+            raise SystemExit(f"PAF 行里混进口径外的行：{r}")
+    bands = {r["age_id"] for r in age}
+    if len(bands) != 20:
+        raise SystemExit(f"年龄档现在是 {len(bands)} 个（<5 到 95+ 应为 20）——重读再改声明")
+    causes_age = {r["cause_id"] for r in age}
+    missing = [t.code for t in TARGETS if t.gbd_cause not in causes_age]
     if missing:
-        msg += f"；targets.py 声明的这些 gbd_cause 在本版词表里找不到：{', '.join(missing)}"
-    if usable:
-        msg += (
-            f"。数值入口：GBD 2023 的 {len(records)} 个 record 共 {len(files)} 个文件，"
-            f"{usable} 个可匿名取回，{len(gated)} 个仍指向 {LOGIN_HREF}"
-            f"（{gated_bytes / 2**30:.1f} GiB）"
-        )
-    else:
-        msg += (
-            f"。数值入口未达判据：GBD 2023 的 {len(records)} 个 record 里 {len(protected)} 个整页要密码"
-            f"（HTTP 200 的 Protected Page，不是空页）、{len(empty)} 个页面没有文件行，"
-            f"{len(gated)} 个文件的链接一律被换成 {LOGIN_HREF}"
-            f"（合计 {gated_bytes / 2**30:.1f} GiB，最大的四个连同大小列在 sample 里）。"
-            f"数值可用覆盖 0/{len(TARGETS)}；匿名可取回的只有这份 {len(cb)} 字节的词表"
-            f"（{version}）。要走通只能注册 IHME 免费非商用账号，CC BY-NC 4.0 不可商用"
-        )
+        raise SystemExit(f"这些病的 gbd_cause 不在年龄组 ZIP 里：{', '.join(missing)}")
+    triples = {(r["cause_id"], r["sex_id"], r["age_id"]) for r in age}
+    if len(triples) != len(age):
+        raise SystemExit("年龄组行里 (cause_id, sex_id, age_id) 有重复——下载不完整")
+    pairs = {(r["cause_id"], r["rei_id"]) for r in paf}
+    if len(pairs) != len(paf):
+        raise SystemExit("PAF 行里 (cause_id, rei_id) 有重复——下载不完整或口径漂了")
+
+    anchor = sum(float(r["val"]) for r in age
+                 if r["cause_id"] == NEOPLASMS and r["sex_id"] == "3")
+    if abs(anchor - BAND_SUM_ANCHOR) > 1e-6:
+        raise SystemExit(
+            f"410/Both 的 20 档合计 {anchor} ≠ 全年龄锚 {BAND_SUM_ANCHOR}——"
+            "IHME 换了数或换了口径，重读归档再改锚")
+
+    per_band = {
+        t.code: sum(1 for r in age
+                    if r["cause_id"] == t.gbd_cause and r["sex_id"] == GBD_SEX[t.sex])
+        for t in TARGETS
+    }
+    per_paf = {t.code: sum(1 for r in paf if r["cause_id"] == t.gbd_cause) for t in TARGETS}
+    vals = [float(r["val"]) for r in paf]
+    neg = [r for r in paf if float(r["val"]) < 0]
+    top = sorted(paf, key=lambda r: -float(r["val"]))[:5]
+    msg = (
+        f"授权路走通：两份 ZIP 匿名取回（{POLL} 与 dl.healthdata.org 实测 200；"
+        "提交是浏览器里的一次性人工动作，任务按参数哈希缓存，taskID 固化在模块常量里）。"
+        f"死亡年龄组 {len(age)} 行＝19 病因 × 三性别 × 20 档（<5 到 95+，无全年龄行；"
+        f"缺档全在低龄段，是零死亡档），18 病声明性别合计 {sum(per_band.values())} 行；"
+        f"410/Both 在场 20 档合计 {anchor:.1f}＝全年龄单行，构成比分母的锚成立。"
+        f"PAF {len(paf)} 行（Percent × Age-standardized；ZIP 里另两组 Number/Percent × "
+        f"All ages 各 {pl.paf_total // 3} 行没取），{len(pairs)} 个 (cause_id, rei_id) 对"
+        f"与 A2 CRA 骨架逐对相等；值域 [{min(vals):.4f}, {max(vals):.4f}]，"
+        f"负值 {len(neg)} 行（保护方向，照落），Cervical|Unsafe sex＝1.0。"
+        f"归档两份 ZIP 共 {pl.size} B、{len(age) + pl.paf_total} 行"
+    )
+    if pl.reach == "proxy":
+        msg += "。这一趟走了代理，reachability 按实情记"
     return ProbeResult(
-        verdict=verdict,
+        verdict="ok",
         message=msg,
         criteria=CRITERIA,
-        # rows_seen 会同时进 source_probe_log 和 dataset_release，所以它只能描述
-        # 归档的那份数据集本身（词表 578 行），不能填 record 扫出来的 118 个文件行——
-        # 后者会让 dataset_release 记下一个 codebook 根本没有的行数
-        rows_seen=sum(len(v) for v in trees.values()),
-        diseases_covered=0 if usable == 0 else len(TARGETS) - len(missing),
+        rows_seen=len(age) + pl.paf_total,
+        diseases_covered=len(TARGETS) - len(missing),
         diseases_total=len(TARGETS),
-        fields_seen=[
-            "measure_name", "sex_label", "age_group_name", "year_id", "location_id",
-            "Cause Hierarchy", "REI Hierarchy",
-        ],
+        fields_seen=[f"gbd2023:{c}" for c in pl.paf[0]],
         sample=[
-            {
-                "code": t.code,
-                "gbd_cause": t.gbd_cause,
-                "gbd_name": causes.get(t.gbd_cause, ""),
-                "l4_children": l4.get(t.gbd_cause, []),
-            }
+            {"code": t.code, "bands": per_band[t.code], "paf": per_paf[t.code]}
             for t in TARGETS
-        ]
-        + [
-            {"gated_file": f["name"], "bytes": f["bytes"]}
-            for f in sorted(gated, key=lambda x: -x["bytes"])[:4]
+        ] + [
+            {"cause": r["cause_name"], "rei": r["rei_name"], "paf": float(r["val"])}
+            for r in top
         ],
-        raw_path=raw.rel(key_dir) if key_dir else None,
-        reachability=reach,
-        http_status=http,
-        latency_ms=ms_total or None,
+        raw_path=raw.rel(pl.key_dir) if pl.key_dir else None,
+        reachability=pl.reach,
+        http_status=pl.http,
+        latency_ms=pl.ms or None,
         dataset_code=DATASET,
-        upstream_version=version,
-        release_date=release_date,
-        release_bytes=len(cb),
-        release_sha256=sha,
+        upstream_version=pl.version,
+        release_date=None,
+        release_bytes=pl.size,
+        release_sha256=pl.sha,
     )

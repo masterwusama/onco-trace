@@ -12,10 +12,12 @@
 
 `status` 从 B7c 起不再留 candidate，三个态各自的判据：
   · `active`——有内容级探针（不是只探可达性的 reach 行）实测过，且 MVP 建表用得上。
-  · `paused`——两种情形合用一个态：等人工注册账号才能补测的（IHME gbd_results 的数值面）、
-    以及只做过 reach 没做过内容级实测的备选码表。两者都不是"源坏了"，所以不写 rejected。
-    同源另有一面已经够装表的就转 active：gbd_cra 的 401 只剩 PAF 那一半，
-    清单这一半从匿名附件落进库了，缺口写在 evidence 里而不是靠状态位表达。
+  · `paused`——只做过 reach 没做过内容级实测的备选码表，以及等人工动作才能补测的。
+    两者都不是"源坏了"，所以不写 rejected。人工动作补测完要跟着翻：gbd_results 的数值面
+    2026-09-10 走通授权取数后转了 active，门走通了还停在 paused 就是状态位在撒谎。
+    同源另有一面已经够装表的也转 active：gbd_cra 的 401 只剩 PAF 那一半，
+    这一半随后也由 gbd_results 的授权下载补上，清单与强度都进库了，
+    缺口写在 evidence 里而不是靠状态位表达。
   · `rejected`——内容级探针判空，且这一维换源也补不上（WHO GHO 的死因×年龄组）。
 逐源理由与"哪几维进 MVP"记在 docs/MVP裁定.md，这里不重复一遍，免得两处说法各自漂移。
 """
@@ -289,10 +291,11 @@ SOURCES: tuple[Source, ...] = (
         name="GBD Results（发病/患病/死亡，按年龄×性别×地点）",
         org="IHME",
         source_type="statistics",
-        dimensions=("stat",),
+        dimensions=("stat", "risk"),
         home_url="https://vizhub.healthdata.org/gbd-results/",
         # 整轮 GBD 的数值一律要登录，唯一匿名可取的是这份词表 ZIP——
-        # download_url 按"已确认可直接取到"的规矩只填它，不代表取到词表就等于取到数据
+        # download_url 按"已确认可直接取到"的规矩只填它；真数值的入口是一个 POST
+        # 任务提交端点而不是静态文件，taskID 固化在 probes/gbd_results.py 里
         download_url=(
             "https://ghdx.healthdata.org/sites/default/files/ihme_query_tool/"
             "IHME_GBD_2021_CODEBOOK.zip"
@@ -301,10 +304,10 @@ SOURCES: tuple[Source, ...] = (
         license="CC BY-NC 4.0",
         commercial_use=False,
         legal_note="IHME 数据非商用且必须署名；实测数值入口一律要注册登录，"
-                   "注册的是免费非商用账号，走通之前这一维不能算通",
+                   "注册的是免费非商用账号",
         fetch_mode="annual",
         reliability="high",
-        status="paused",
+        status="active",
         evidence="B3 实测（2026-09-07）：设计口径全中，数值入口全关。"
                  "词表层 18/18 病都有对应病因档（另带 13 个 L4 亚档，肝癌按肝炎/酒精/NASH 分因）、"
                  "中国=location_id 6、年度 1990–2021、性别 Male/Female/Both、"
@@ -313,11 +316,18 @@ SOURCES: tuple[Source, ...] = (
                  "（合计 6.3 GiB，最大单项 206 MB），另有 2 个 record 整页是 HTTP 200 的 Protected Page；"
                  "Results Tool 的查询接口要 Azure AD B2C 换来的 token"
                  "（scope https://ihmecsu.onmicrosoft.com/data-api/data.read），界面前还有一层 Cloudflare。"
-                 "“死亡年龄段分析”因此暂无源可用，改由 GLOBOCAN 与 WHO GHO 顶上。"
                  "B4 复核（同日）：这份 codebook ZIP 仍直连 200 / 127869 字节，"
                  "但它依旧是 2021 版词表，而平台已发布 GBD 2023（vizhub /api/config "
                  "releaseText=GBD 2023、copyYear=2025）——引用这一档 ID 时标的年份按估计值那一版走，"
-                 "不要按词表的 Y2024M05D16 走",
+                 "不要按词表的 Y2024M05D16 走。"
+                 "授权取数实测（2026-09-10）：注册账号后这条路走通——登录是浏览器里的一次性"
+                 "人工动作（MSAL popup 换 data.read token），之后的提交、轮询、下载全可编程重放："
+                 "POST php/download.php 带 Bearer 提交两个参数组（任务按参数哈希缓存，"
+                 "taskID 固化在 probes/gbd_results.py 的模块常量里），匿名 GET get_download_result.php "
+                 "轮询出 state=success，再匿名从 dl.healthdata.org 拉 ZIP。取回两份：死亡年龄组 "
+                 "951 行（19 病因 × 3 性别 × 20 档，18 病声明性别合计 319 行落 age_death_pct）与"
+                 "年龄标化 PAF 71 对（与 CRA A2 骨架逐对相等，落 disease_risk_factor.paf）。"
+                 "B3 那句「死亡年龄段分析暂无源可用」作废。",
     ),
     Source(
         code="gbd_cra",
@@ -360,7 +370,10 @@ SOURCES: tuple[Source, ...] = (
                  "两版之间没有出现过重编号。"
                  "C2e 落库（2026-09-08）：这份匿名 A2 就是危险因素维的可干预暴露那一半——"
                  "33 个暴露 × 71 条病因对应关系已按 `role='exposure'` 进库，覆盖 17/18 病"
-                 "（brain 源里一行都没有，不是解析漏）。授权门后剩的只是强度：paf 仍无源可填。",
+                 "（brain 源里一行都没有，不是解析漏）。授权门后剩的只是强度：paf 仍无源可填。"
+                 "授权补强（2026-09-10）：paf 的源由同账号的 gbd_results 授权下载补上——"
+                 "71 对年龄标化 PAF 与 A2 骨架逐对相等，`paf`/`paf_basis` 已填进库，"
+                 "取数路与值域细节见 gbd_results 的 evidence。",
     ),
     Source(
         code="globocan",

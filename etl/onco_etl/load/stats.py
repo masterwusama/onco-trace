@@ -1,23 +1,26 @@
-"""统计层与生存率装载器：GLOBOCAN、GCO Over Time、SEER Stat Facts 三台源写两张表。
+"""统计层与生存率装载器：GLOBOCAN、GCO Over Time、SEER Stat Facts、GBD Results 四台源写两张表。
 
-一台装载器管三个源，因为它们填的是同一张长表 `stat_fact`，而"五年存活率"那一维有
-自己的表 `survival`（分期档与观测/拟合两列口径是这张表存在的理由）。拆成三台要把
-`num` / `clip_note` / 性别与口径行的解析写三遍，合在一台里三个源各占一个取数函数。
+一台装载器管四个源，因为它们填的是同一张长表 `stat_fact`，而"五年存活率"那一维有
+自己的表 `survival`（分期档与观测/拟合两列口径是这张表存在的理由）。拆成四台要把
+`num` / `clip_note` / 性别与口径行的解析写四遍，合在一台里四个源各占一个取数函数。
 
-四条口径决定，都是这两张表的列注释逼出来的：
+五条口径决定，都是这两张表的列注释逼出来的：
 
-1. **只落声明性别那一行。** 三个源都同时给 sex 0/1/2 三套数，而 sex=0 是 1 与 2 的合计。
+1. **只落声明性别那一行。** 源都同时给两性与合计三套数——GCO/GLOBOCAN 是 sex 0/1/2
+   （0＝合计），GBD 是 1/2/3（3＝合计），两套码空间互不相通，映射分开声明。
    三种性别一起进同一张长表，一次不带 sex 条件的 `SUM` 就把例数算成两倍——所以按
    `targets.sex` 各取一行，页面真要分性别比时再回归档读原始响应。
 2. **`estimate_basis` 分清"估算"与"实测"。** GLOBOCAN 是把 919 个亚登记处加权外推到全国
-   的模型估算，走 `national_estimate`；GCO Over Time 的中国序列是 5 个登记处覆盖 60% 人口
-   的外推，走 `registry_extrapolated`；SEER 的 Observed 列与年龄构成是登记在册的实测，
-   走 `registry_cohort`，Modeled Trend 列是 Joinpoint 拟合线，走 `model_trend`。
-   SEER 的 "Death Rate — U.S." 那一列虽然是全美死因口径，它同样是登记真数而不是模型外推，
-   所以与 GLOBOCAN 的 `national_estimate` 不是一回事——这一列的分工是"能不能当实测读"，
-   不是"覆盖多大地理范围"。
+   的模型估算，走 `national_estimate`；GBD 2023 的中国死亡数同样是国家级建模估算、
+   同走 `national_estimate`——差别只在它细到 20 个年龄档；GCO Over Time 的中国序列是
+   5 个登记处覆盖 60% 人口的外推，走 `registry_extrapolated`；SEER 的 Observed 列与
+   年龄构成是登记在册的实测，走 `registry_cohort`，Modeled Trend 列是 Joinpoint 拟合线，
+   走 `model_trend`。SEER 的 "Death Rate — U.S." 那一列虽然是全美死因口径，它同样是
+   登记真数而不是模型外推，所以与 GLOBOCAN 的 `national_estimate` 不是一回事——这一列
+   的分工是"能不能当实测读"，不是"覆盖多大地理范围"。
 3. **`year=0` 表示"这不是年度序列"**，不是"公元 0 年"：GLOBOCAN 的国家级单点估算、
-   SEER 的年龄组构成占比都填 0，估算年份写在 `cohort_note` 与 `dataset_release.upstream_version`。
+   SEER 的年龄组构成占比都填 0，估算年份写在 `cohort_note` 与 `dataset_release.upstream_version`；
+   GBD 的年龄组是 2021 单年，照实落 `year=2021`。
 4. **五年存活率一个数只落一张表：只进 `survival`。** SEER 年度序列表的四个表头列只有两个去处——
    新发率与死亡率进 `stat_fact`，5-Year Relative Survival 那一列拆出的 Observed / Modeled Trend
    两栏进 `survival`。四个表头列里 "Rate of New Cases" 出现两次（SEER 8 与 SEER 12 两套队列），
@@ -25,6 +28,13 @@
    `docs/MVP裁定.md` §五 把"发病量 / 年龄组 / 趋势"派给 `stat_fact`、
    把"五年存活率"整维派给 `survival`，而 `survival.is_observed` 那列存在的理由就是分开观测值与
    拟合值。同一个数写进两张表，迟早有一边先漂——实测一次装载里逐格相同的有 1674 行。
+5. **GBD 的死亡年龄构成是算出来的，不是源给的。** 年龄组 ZIP 里只有档内死亡数
+   （Deaths × Number × 2021 × China × All Population，整份文件就这一个口径，探针逐行断言过），
+   `age_death_pct` 的分子分母都由 `gbd_rows` 算：分母＝该病声明性别在场档的合计。ZIP 里
+   没有全年龄行，但 410/Both 在场 20 档合计与单独取的全年龄单行逐位相等
+   （`gbd_results.BAND_SUM_ANCHOR`），缺的档全是低龄零死亡档——求和缺它们不缺数。
+   档内绝对死亡数不落这张表：同口径的国家级单点已在 GLOBOCAN 的 `mortality_total` 行上，
+   GBD 这一份的价值在年龄档细分，落两份绝对数迟早有人拿去相减。
 
 `metric` 的取值沿用列注释里那一张单子，不添新词：年龄别数值靠 `age_band` 非空来区分，
 `incidence_crude_rate` 配 `age_band='45-49'` 就是那一档的年龄别率而不是全年龄粗率。
@@ -37,7 +47,7 @@ from __future__ import annotations
 import re
 
 from .. import raw
-from ..probes import gco_overtime, globocan, seer_statfacts
+from ..probes import gbd_results, gco_overtime, globocan, seer_statfacts
 from ..targets import TARGETS
 from .base import Ctx, LoadResult, prov, replace_scope
 
@@ -47,10 +57,13 @@ OVERTIME = gco_overtime.SOURCE
 OVERTIME_DATASET = gco_overtime.DATASET
 SEER = seer_statfacts.SOURCE
 SEER_DATASET = seer_statfacts.DATASET
+GBD = gbd_results.SOURCE
+GBD_DATASET = gbd_results.DATASET
 
 ALL_STAGES = "All stages"
 
-# 源里按 sex 0/1/2 三套都给，装载只取 targets 声明的那一套
+# GCO/GLOBOCAN 按 sex 0/1/2 三套都给，装载只取 targets 声明的那一套；GBD 是另一套
+# 码空间（3=Both/1=Male/2=Female），映射在 gbd_results.GBD_SEX，不并进这张表
 SEX_DECLARED = {"both": 0, "male": 1, "female": 2}
 
 # 逐病只取声明性别那一行：见模块注释第 1 条
@@ -289,6 +302,36 @@ def overtime_rows(
     return rows
 
 
+def gbd_rows(pl: gbd_results.GbdPayload, sid: int, rid: int, ids: dict[str, int]) -> list[dict]:
+    """GBD 2023 的中国死亡年龄构成：源只给档内死亡数，构成比由这里算（模块注释第 5 条）。
+
+    取行只按 (cause_id, 声明性别) 过滤——Deaths/Number/2021/China/All Population 这半个
+    口径对整份文件成立，探针逐行断言过，装载器不再重判一遍。
+    """
+    rows: list[dict] = []
+    for t in TARGETS:
+        bands = [
+            r for r in pl.age
+            if r["cause_id"] == t.gbd_cause and r["sex_id"] == gbd_results.GBD_SEX[t.sex]
+        ]
+        if not bands:
+            continue
+        year = int(bands[0]["year"])
+        total = sum(float(r["val"]) for r in bands)
+        for r in sorted(bands, key=lambda r: int(r["age_id"])):
+            rows.append(
+                _stat(
+                    ids[t.code], sid, GBD_DATASET, rid, "age_death_pct", "percent",
+                    100.0 * float(r["val"]) / total,
+                    "national_estimate", "l2_rule",
+                    year=year, age_band=r["age_name"], sex=t.sex, region="China",
+                    note=f"GBD 2023 Deaths Number {year} China All Population；"
+                         "构成比＝该档死亡数/在场档合计",
+                )
+            )
+    return rows
+
+
 def series_col(header: str) -> tuple[str, str, str]:
     """'Rate of New Cases — SEER 8' → (metric, region, 单位)；认不出的表头返回全空。
 
@@ -460,14 +503,20 @@ def load(ctx: Ctx) -> LoadResult:
     tp = globocan.load_payload(ctx.offline)
     op = gco_overtime.load_payload(ctx.offline)
     sp = seer_statfacts.load_payload(ctx.offline)
+    gp = gbd_results.load_payload(ctx.offline)
     if tp.cn is None or op.cn is None:
         raise SystemExit("响应里没有 iso3=CHN 那一档，统计层的中国两路没法装载（探针会记 blocked）")
     if not sp.pages:
         raise SystemExit("SEER 一页都没解析出来，统计层的美国那一路没法装载")
+    if gp.blocked:
+        raise SystemExit(f"GBD 的两份 ZIP 没取回：{gp.blocked.message}")
+    if not gp.age or not gp.paf:
+        raise SystemExit("GBD 的 ZIP 解析出了空表——口径漂了，先跑探针看判据再装载")
 
     with ctx.tx() as conn:
-        sid_today, sid_over, sid_seer = (
-            ctx.source_id(TODAY), ctx.source_id(OVERTIME), ctx.source_id(SEER)
+        sid_today, sid_over, sid_seer, sid_gbd = (
+            ctx.source_id(TODAY), ctx.source_id(OVERTIME), ctx.source_id(SEER),
+            ctx.source_id(GBD)
         )
         rid_today = ctx.register(
             conn, TODAY, TODAY_DATASET,
@@ -496,11 +545,21 @@ def load(ctx: Ctx) -> LoadResult:
             rows_seen=len(sp.pages),
             raw_path=raw.rel(sp.key_dir) if sp.key_dir else None,
         )
+        rid_gbd = ctx.register(
+            conn, GBD, GBD_DATASET,
+            upstream_version=gp.version,
+            release_date=None,
+            body_bytes=gp.size,
+            sha256=gp.sha,
+            rows_seen=len(gp.age) + gp.paf_total,
+            raw_path=raw.rel(gp.key_dir) if gp.key_dir else None,
+        )
         ids = ctx.disease_ids(conn)
         stats = {
             sid_today: today_rows(tp, sid_today, rid_today, ids),
             sid_over: overtime_rows(op, sid_over, rid_over, ids),
             sid_seer: seer_stat_rows(sp, sid_seer, rid_seer, ids),
+            sid_gbd: gbd_rows(gp, sid_gbd, rid_gbd, ids),
         }
         survs, warn = seer_survival_rows(sp, sid_seer, rid_seer, ids)
         n_stat = sum(
@@ -517,10 +576,13 @@ def load(ctx: Ctx) -> LoadResult:
     no_region = sorted({r["metric"] for rs in stats.values() for r in rs if not r["region"]})
     msg = (
         f"stat_fact GLOBOCAN {len(stats[sid_today])} / GCO Over Time {len(stats[sid_over])} / "
-        f"SEER {len(stats[sid_seer])}；survival {n_surv}（分期档 {staged} 病 + 全期头条 "
-        f"{len(TARGETS)} 病 + 逐年序列，其中拟合值 {fitted} 行，五年存活率一律不落 stat_fact）；"
-        f"GCO Over Time 的死亡序列 {len(op.series('data_mortality.json'))} 行"
-        "——中国死亡年龄组这一维按空态处理"
+        f"SEER {len(stats[sid_seer])} / GBD 2023 中国死亡年龄组 {len(stats[sid_gbd])} 行"
+        "（构成比＝该档死亡数/在场档合计，缺的档全是低龄零死亡档；410/Both 在场 20 档合计"
+        "与全年龄单行逐位相等，分母的锚成立）；"
+        f"survival {n_surv}（分期档 {staged} 病 + 全期头条 {len(TARGETS)} 病 + 逐年序列，"
+        f"其中拟合值 {fitted} 行，五年存活率一律不落 stat_fact）；"
+        f"GCO Over Time 的死亡序列 {len(op.series('data_mortality.json'))} 行——中国死亡"
+        "年龄组这一维由 GBD 2023 补上，不再按空态处理"
     )
     if warn:
         msg += f"；分期措辞与标签形状不一致，要人看：{', '.join(warn)}"

@@ -63,6 +63,14 @@ COLUMNS: tuple[Column, ...] = (
            lambda r: bool((r.get("incidence") or {}).get("total"))
            and bool((r.get("mortality") or {}).get("total"))),
     Column("stat", "who_gho", "gho-odata-cause-age", "WHO GHO 死因×年龄"),
+    # 一份探针两维各占一列：criteria 的两半（年龄组死亡数 + 年龄标化 PAF）在 sample 里
+    # 是 bands / paf 两个计数字段。diseases_covered 只按年龄组那一半计（探针的 missing
+    # 是年龄组口径），所以 PAF 列 17/18 与自报 18 会对不上——对账节点名的是这个，
+    # 不是探针算错了
+    Column("stat", "gbd_results", "gbd2023-deaths-paf", "GBD 死因×年龄（授权）",
+           lambda r: (r.get("bands") or 0) >= 1),
+    Column("risk", "gbd_results", "gbd2023-deaths-paf", "GBD PAF（授权）",
+           lambda r: (r.get("paf") or 0) >= 1),
     # 白血病那页源本身不给分期表，探针按 targets.py 的性别/口径声明记 stage_exempt
     Column("survival", "seer_statfacts", "statfacts-html", "SEER 分期档",
            lambda r: (r.get("stages") or 0) >= 3 or bool(r.get("stage_exempt"))),
@@ -83,7 +91,8 @@ COLUMNS: tuple[Column, ...] = (
 # 有专项探针记录但刻意不进矩阵的数据集，原因写在这里而不是让读者对着空列猜
 NOT_IN_MATRIX = (
     ("gbd_results", "gbd21-codebook",
-     "sample 只有「词表里有这一档」，判据要的数值面 118 个文件全在 IHME 登录门后，18 病零行可判"),
+     "sample 只有「词表里有这一档」，没有逐病布尔；数值面已由另一支授权探针"
+     "`gbd2023-deaths-paf` 取回并占了 stat / risk 两列"),
     ("gbd_cra", "cra-cause-risk-map",
      "判据原话要求「≥3 个独立危险因素带效应量（PAF 或 RR/OR + CI）」，匿名侧效应量 0/18，"
      "所以探针给的就是 0/18；关联骨架 10/18 是另一件事，只在 message 里，不占一列"),
@@ -208,7 +217,8 @@ def build() -> str:
         for col in bad:
             p = stat[col]["probe"]
             L.append(f"- ⚠️ `{col.source}/{col.dataset}` 逐病数到 {stat[col]['passed']}，"
-                     f"探针自报 `diseases_covered={p['covered']}`——明细与聚合有一个要修。")
+                     f"探针自报 `diseases_covered={p['covered']}`——两维共用一份探针时聚合数"
+                     f"只按其中一半算，先分清这种情况；都不是的话就是明细与聚合真对不上，要修。")
     else:
         L.append("- 每列逐病数出的达标数与探针自报的 `diseases_covered` 全对得上。")
     for col in COLUMNS:
