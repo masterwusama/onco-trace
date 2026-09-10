@@ -345,7 +345,14 @@ ops\api.ps1 routes                       # 服务层注册了哪几条路径与�
 ops\api.ps1 serve                        # 起只读后端，监听 .env 的 API_HOST:API_PORT，文档在 /api/docs
 ops\web.ps1 dev                          # 前端开发服务器 http://127.0.0.1:5174，/api 代理到 127.0.0.1:8001（后端要另起）
 ops\web.ps1 build                        # 前端出 frontend/dist/；之后 ops\api.ps1 serve 同台托管，站点就在 /
+ops\up.ps1 dev                           # 一条命令起两个窗口：8001 只读后端 + 5174 开发服务器
+ops\up.ps1 site                          # 一条命令出生产形态：先 build，再同台托管在 8001（站点在 /）
 ```
+
+`up.ps1` 只是上面那两行的合成，起前先拦三道只读检查：`.env` 由 `api/onco_api/config.py` 自己解
+（不复制第二份解析代码）、MySQL 端口在听、要用的端口没被占。占用那一条会报出 PID 与进程名后退出——
+**不代杀**：挂着旧代码的后端照样回 200、照样吐对不上仓库的数，那种现场看着像数据 bug 而不是进程问题。
+它不跑迁移（改表结构不该发生在「启动」里，仍归 `db/tests/run.py migrate`）、不跑三门禁。
 
 探针跑完用 `cd etl && python -m onco_etl matrix` 重新生成 `docs/数据源覆盖度.md`——
 那份文档是脚本从库里出来的，不要手改。
