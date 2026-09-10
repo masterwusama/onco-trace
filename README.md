@@ -7,7 +7,7 @@
 数据全部来自公开源抓取，仓库里没有人工录入模块。每个数字都带来源、口径与查阅时间；
 本站不做诊断，症状反查输出的是参考排序。
 
-## 当前进度：装载六批按维收口，后端四批十五条读接口 + 前端三屏可看
+## 当前进度：装载六批按维收口，后端五批二十条读接口 + 前端四视图（含五路反查）
 
 P0 的出口判据是"由覆盖度矩阵裁定 MVP 建哪些表"，两个产出都已在仓库里：
 [docs/数据源覆盖度.md](docs/数据源覆盖度.md)（13 列 × 16 份裁定，由
@@ -183,6 +183,23 @@ vue-router 4 会把 `null` 序列化成裸键 `?region&`，裸键读回来又跟
 地区 China、年龄组空）、`incidence_asr` 下 `national_estimate × sex=both`（13/18 覆盖、缺五个性别相关癌种）、
 `trial_count`（四轴全空串，18/18 覆盖）三档，构建 1.94 s，控制台仅一个故意触发的空串轴 404。
 
+后端第五批（D3e）加五条反查接口，读接口从十五条扩到二十条：`/api/anatomy/{node_id}/diseases`、
+`/api/symptoms/{name}/diseases`、`/api/risk-factors/{factor_id}/diseases`、
+`/api/targets/{ot_id}/diseases`、`/api/drugs/{drug_id}/diseases`。正向页答"这一病有什么"，
+反查页答"这个东西挂在哪些病上"——两边读同一张关系表、走同一道 `NOT_REJECTED` 过滤，同一对
+(病, 实体) 不会一边可见一边不可见，这条由跑测器的 `check_reverse` 逐条比对守。路径参数用
+稳定标识而不是名字：器官与危险因素用表内 id、症状用名 + lang（`symptom` 没有独立标识列）、
+靶点用 `ot_id`、药用 CHEMBL 码；疾病清单一律按病码升序，与列表页同序，前端不重排。各路的
+口径与正向页同构：症状反查按源分块回（三源各说各的，不并表）；危险因素反查按 genetic /
+exposure 两层分列、两层各自的计数不合成总数（`disease_risk_factor` 没有 `review_status`
+列，这一路不过滤——装载器写进来就算）；靶点反查每病带 `score` / `novelty` / `node_used`
+（同一病多笔挂载取合成分最高那笔）；药物反查每病带 `entries[]`，即这个药在这一病上的全部
+(阶段, 机制) 条目——同药同病可以多期并行。前端加第四个视图 `ReverseView` 一屏五用，器官、
+症状、危险因素、研究四块面板的行上各带「反查」链接；五条路径在浏览器里各点过一遍（肺的一个
+器官节点 → 1 病、fatigue → 3 病、factor 4802 → 1 病、EGFR → 18 病带 score、
+ATEZOLIZUMAB → 16 病带条目数）。`python api/tests/run.py` 到这一批 15,946 条断言、
+整跑 56 s；`BACKEND_ONLY` 清空——注册的每条路径都有页面在用。
+
 ```
 18 个恶性肿瘤基准   etl/onco_etl/targets.py
 21 个候选源登记     etl/onco_etl/sources.py   →  MySQL db_ot.source
@@ -274,10 +291,11 @@ HP 症状注释各只有约 1% 覆盖，HPO / Orphanet / NCIt 的实测覆盖见
 │ fetch.py     直连→代理三态取数    │  db_ot  │ dimensions.py 十维度量一台聚合     │
 │ raw.py       data/raw 归档+sha256 │         │ gaps.py      空态是度量上的谓词    │
 │ joblog.py    etl_job_log 运行史   │         │ serialize.py 出处五列 → provenance │
-│ probe*       覆盖度探针           │         │ routes/ 六模块十五条 GET           │
+│ probe*       覆盖度探针           │         │ routes/ 七模块二十条 GET         │
 │ load/        探针解析 → 业务表行  │         └────────────────────────────────────┘
 │ matrix.py    裁定 → 覆盖度文档    │         ┌─ 前端 frontend/ ───────────────────┐
-└───────────────────────────────────┘         │ views/   三屏：疾病列表 + 逐病详情 + 跨病榜 │
+└───────────────────────────────────┘         │ views/   四视图：列表 + 详情 + 榜  │
+                                              │          + 反查（五路共用一屏）    │
                                               │ panels/  一屏一面板，研究层共用一台│
                                               │ lib/chart.js  echarts 公共配置     │
                                               │ api/client.js 只发 GET + 路径白名单│
@@ -308,7 +326,7 @@ ops\etl.ps1 probe             # 专项覆盖度探针，不带 --code 就是全�
 ```powershell
 python db/tests/run.py status            # 表行数 + 三道门禁（源授权 / 业务表出处列 / 两份 DDL 一致）
 python etl/tests/run.py                  # 解析回归：仓库内的上游页面 + 构造的最小页，不联网
-python api/tests/run.py                  # 服务层对账：十五条接口返回的每个数字另问一次 SQL，外加一道路径契约（前端用到的 ⊆ 登记清单 ⊆ 真注册的路由，要连着库）
+python api/tests/run.py                  # 服务层对账：二十条接口返回的每个数字另问一次 SQL，外加一道路径契约（前端用到的 ⊆ 登记清单 ⊆ 真注册的路由，要连着库）
 ops\etl.ps1 load --list                  # 有哪些装载器
 ops\etl.ps1 load --code disease --offline # 把疾病主档从声明 + MONDO 归档装进 disease
 ops\etl.ps1 load --code anatomy --offline # 器官树与组织学：SEER 交叉表 + MONDO 亚部位 → 四张表
@@ -340,7 +358,7 @@ ops\web.ps1 build                        # 前端出 frontend/dist/；之后 ops
 | `etl/` | `onco_etl` 采集层，`python -m onco_etl` 运行；`probes/` 是覆盖度探针（只写裁定），`load/` 是装载器（复用探针里那份解析写业务表），`--offline` 重放读本机 `data/raw/` 归档 |
 | `etl/tests/` | 解析回归：`fixtures/` 存代表页的上游原样字节，`run.py` 先比 sha256 再断言解析结果 |
 | `api/` | `onco_api` 服务层，`python -m onco_api serve` 运行；只读（会话级 READ ONLY + 只注册 GET），`dimensions.py` 一台聚合十个维度量、`gaps.py` 把空态写成度量上的谓词；`tests/run.py` 拿真库把响应里的每个数字与 SQL 直查对账 |
-| `frontend/` | `src/` 界面层，Vue 3 + Vite，两个视图十一屏、一个 `client.js` 只发 GET；`ops\web.ps1 build` 出的 `dist/` 由服务层在同一个端口托管。跑法与界面上的那几条约定见 [frontend/README.md](frontend/README.md) |
+| `frontend/` | `src/` 界面层，Vue 3 + Vite，四个视图（列表 / 详情十一屏 / 跨病榜 / 反查五路一屏）、一个 `client.js` 只发 GET；`ops\web.ps1 build` 出的 `dist/` 由服务层在同一个端口托管。跑法与界面上的那几条约定见 [frontend/README.md](frontend/README.md) |
 | `docs/` | `数据源探针计划.md`（判据与逐批实测）、`数据源覆盖度.md`（脚本生成，勿手改）、`MVP裁定.md`（P0 出口：建哪些表） |
 | `data/` | `raw/` 原始响应归档、`exports/` 待抽查草稿，都不入库不提交 |
 | `ops/` | PowerShell 包装脚本 |
