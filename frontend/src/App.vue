@@ -18,6 +18,10 @@ onMounted(async () => {
 <template>
   <header class="top">
     <RouterLink to="/" class="brand">onco-trace</RouterLink>
+    <nav class="nav">
+      <RouterLink to="/">疾病列表</RouterLink>
+      <RouterLink to="/compare">跨病榜</RouterLink>
+    </nav>
     <MetaBar :meta="meta" :error="metaErr" />
   </header>
   <main class="body">

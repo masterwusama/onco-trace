@@ -5,6 +5,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 const routes = [
   { path: '/', name: 'list', component: () => import('../views/DiseaseListView.vue') },
   { path: '/disease/:code', name: 'detail', component: () => import('../views/DiseaseDetailView.vue') },
+  { path: '/compare', name: 'compare', component: () => import('../views/CompareView.vue') },
 ]
 
 export default createRouter({ history: createWebHashHistory(), routes })

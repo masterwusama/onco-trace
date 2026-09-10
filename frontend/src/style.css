@@ -44,9 +44,19 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
   position: sticky; top: 0; z-index: 20;
 }
 .top .brand { font-size: 17px; font-weight: 700; color: var(--txt); letter-spacing: .3px; }
+/* 上态用 exact：/ 是另两屏的祖先路由，按 router-link-active 会在榜页把「疾病列表」一起点亮。 */
+.nav { display: flex; gap: 16px; font-size: 13px; }
+.nav a { color: var(--sub); padding: 1px 0; border-bottom: 2px solid transparent; }
+.nav a.router-link-exact-active { color: var(--txt); border-bottom-color: var(--accent); }
 .meta { display: flex; gap: 16px; flex-wrap: wrap; color: var(--sub); font-size: 12.5px; margin-left: auto; }
 .meta span { white-space: nowrap; }
 .meta-err { color: var(--warn); }
+
+button {
+  padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--card); color: var(--txt); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+button:hover { border-color: var(--accent); color: var(--accent); }
 
 .body { width: var(--page); margin: 0 auto; padding: 16px clamp(10px, 2vw, 32px) 56px; }
 .foot {
@@ -207,6 +217,13 @@ tr.detail dd.json { white-space: pre-wrap; }
 .badge.lang { background: #e9f0fb; color: var(--accent); }
 .legend-note { color: var(--sub); font-size: 12px; margin: 0 0 8px; }
 .legend-note b { color: var(--fit); font-weight: 500; }
+
+/* ── 跨病榜：口径条与年份切换 ─────────────────────────────── */
+/* 动作列按内容自适宽：研究层的 .rowbtn 钉了 62px，「排这个度量」会被压成一字一行。 */
+table.grid td.act { width: 1%; white-space: nowrap; }
+.kv .pin { display: inline-flex; align-items: center; gap: 6px; }
+/* 年份切换器嵌在一行字里，宽度按"最新一年（2023）"这一档给，别把后半句挤下去。 */
+.yearsel { margin-left: 6px; padding: 1px 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--card); font-size: 12.5px; }
 
 /* ── 词表维：器官 / 组织学 / 症状 / 危险因素 ──────────────── */
 .node {

@@ -21,7 +21,7 @@ const query = computed(() => {
   const cfgFilters = Object.keys(cfg.value.filters)
   const out = {}
   for (const k of [...KEYS.filter((x) => cfgFilters.includes(x)), 'limit', 'offset', 'include'])
-    if (route.query[k] != null) out[k] = String(route.query[k])
+    if (route.query[k] != null && route.query[k] !== '') out[k] = String(route.query[k])
   return out
 })
 

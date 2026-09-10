@@ -1,7 +1,7 @@
 # 前端
 
-癌症与高致死疾病数据站的界面层：一个疾病列表页、一个逐病详情页（十一屏），读的就是
-`api/` 那十四接口，没有任何自己的数据。站点不做诊断，症状反查输出的也只是参考排序。
+癌症与高致死疾病数据站的界面层：一个疾病列表页、一个逐病详情页（十一屏）、一个跨病榜页，读的就是
+`api/` 那十五接口，没有任何自己的数据。站点不做诊断，症状反查输出的也只是参考排序。
 
 ## 跑起来
 
@@ -22,11 +22,11 @@ ops\web.ps1 build    # 生产：出 dist/（一次构建约 2 s）
 
 | 目录 | 内容 |
 |---|---|
-| `src/views/` | `DiseaseListView` 列表页（18 病 × 十维度量一台请求）、`DiseaseDetailView` 详情页（十一屏切换） |
+| `src/views/` | `DiseaseListView` 列表页（18 病 × 十维度量一台请求）、`DiseaseDetailView` 详情页（十一屏切换）、`CompareView` 跨病榜（度量 → 口径 → 榜） |
 | `src/panels/` | 一屏一个面板；研究层四维共用 `ResearchPanel`，配置在 `src/lib/research.js` 里逐维给 |
 | `src/components/` | 出处标签、空态、约定清单、分页器、图表盒、元信息条等共用件 |
 | `src/api/client.js` | 唯一发请求的地方：一份 `API_PATHS` 清单 + 一个只发 GET 的 `get()` |
-| `src/lib/` | `chart.js` echarts 公共配置、`format.js` 数字与空值、`tabs.js` 十一屏清单、`useApi.js` 单飞请求 |
+| `src/lib/` | `chart.js` echarts 公共配置、`format.js` 数字与空值、`tabs.js` 十一屏清单、`useApi.js` 单飞请求、`compare.js` 跨病榜口径轴与标签 |
 
 路由用 hash（`/#/disease/lung`）：静态托管不需要深链接 fallback，"只注册 GET"这道护栏也就不必为它开口子。
 

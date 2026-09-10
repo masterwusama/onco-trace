@@ -67,6 +67,59 @@ def disease_stats(
     }
 
 
+@router.get("/stats/metrics")
+def metrics(conn: Connection = Depends(get_conn)) -> dict:
+    """可以排榜的度量清单：一行一个 `stat_fact.metric`，带单位、覆盖病数与年份跨度。
+
+    榜要求调用方先给 `metric`，而这一列的取值只在库里——所以这一份就是那 17 个名字的唯一出处。
+    前端抄一份进代码，装载多一维就没人知道；`/api/meta` 的 `dims.stat` 是照口径切的
+    （cn_point / cn_trend / us_series / age_case / age_death / query_count），不是照 metric 切的，
+    两者不能互相顶替。这里是聚合，一行不是一行事实，所以不带出处。
+    """
+    item_rows = rows(
+        conn,
+        "SELECT metric, COUNT(*) AS rows_, COUNT(DISTINCT disease_id) AS diseases,"
+        "       COUNT(DISTINCT unit) AS units, MIN(unit) AS unit,"
+        "       SUM(year = 0) AS year_zero_rows,"
+        "       MIN(NULLIF(year, 0)) AS year_first, MAX(NULLIF(year, 0)) AS year_last,"
+        "       COUNT(DISTINCT region) AS region_n,"
+        "       COUNT(DISTINCT estimate_basis) AS estimate_basis_n,"
+        "       COUNT(DISTINCT sex) AS sex_n, COUNT(DISTINCT age_band) AS age_band_n"
+        f" FROM stat_fact WHERE {NOT_REJECTED}"
+        " GROUP BY metric ORDER BY metric",
+    )
+    unit_rows = rows(conn, f"SELECT DISTINCT metric, unit FROM stat_fact WHERE {NOT_REJECTED}"
+                           " ORDER BY metric, unit")
+    by_metric: dict[str, list[str]] = {}
+    for r in unit_rows:
+        by_metric.setdefault(r["metric"], []).append(r["unit"])
+    return {
+        "table": "stat_fact",
+        "note": DIM_BY_KEY["stat"].note,
+        "order": "按 metric 升序（MySQL utf8mb4_0900_ai_ci 的序），不是重要度序",
+        "conventions": {
+            "year_zero": "year_zero_rows 是这一度量里 year=0 的行数——源没给年份的单点估算或"
+                         "查询计数，它们与 year_first..year_last 那批年不在同一件事上",
+            "axes": "region_n / estimate_basis_n / sex_n / age_band_n 是未过滤时这一度量各有"
+                    "几个取值。榜要全部钉成才排得成，但真数要照 /api/stats/compare 当下回的"
+                    " needs 走：钉完一轴，另一轴还剩几个取值会变",
+        },
+        "items": [
+            {
+                "metric": r["metric"],
+                "unit": r["unit"] if r["units"] == 1 else by_metric[r["metric"]],
+                "rows": int(r["rows_"]),
+                "diseases": int(r["diseases"]),
+                "year_zero_rows": int(r["year_zero_rows"] or 0),
+                "year_first": r["year_first"],
+                "year_last": r["year_last"],
+                "axes": {k: int(r[f"{k}_n"]) for k in COMPARE_DIMS},
+            }
+            for r in item_rows
+        ],
+    }
+
+
 @router.get("/stats/compare")
 def compare(
     conn: Connection = Depends(get_conn),
@@ -78,7 +131,7 @@ def compare(
     year: int = Query(None, description="不传则取该口径下有行的最新一年"),
 ) -> dict:
     """按 (度量, 地区, 估算依据, 性别, 年龄组, 年份) 钉死后的跨病榜。"""
-    pinned: dict[str, object] = {"metric": metric}
+    pinned: dict[str, object] = {"metric": metric, "year": year}
     auto: list[str] = []
     needs: list[str] = []
     choices: dict[str, list[dict]] = {}
@@ -88,7 +141,7 @@ def compare(
         cands = _candidates(conn, col, pinned)
         if not cands and col == COMPARE_DIMS[0]:
             raise HTTPException(
-                404, f"metric={metric} 在 stat_fact 里没有行。可用的度量名见 /api/meta 的 dims.stat"
+                404, f"metric={metric} 在 stat_fact 里没有行。可排榜的度量清单见 /api/stats/metrics"
             )
         want = given[col]
         if want is not None:
@@ -106,7 +159,7 @@ def compare(
             choices[col] = cands
 
     out: dict = {
-        "pinned": {**pinned, "year": year},
+        "pinned": pinned,
         "auto_pinned": auto,
         "needs": needs,
         "choices": choices,
@@ -136,7 +189,7 @@ def compare(
     elif year not in years:
         out["year_used"] = year
         raise HTTPException(
-            404, f"{_slice_text({**pinned, 'year': year})} 在 year={year} 没有行。"
+            404, f"{_slice_text(pinned)} 在 year={year} 没有行。"
             f"该口径有数据的是 {years[0]}..{years[-1]}（{len(years)} 年）"
         )
     else:
@@ -175,9 +228,13 @@ def _where(pinned: dict, prefix: str = "") -> str:
 
 
 def _candidates(conn: Connection, col: str, pinned: dict) -> list[dict]:
-    """一列口径在当前切片下还剩几个取值，各自覆盖几个病。已钉的列都进 WHERE，
-    所以这是"接着往下选还能选什么"，不是全库清单。"""
-    conds = [NOT_REJECTED] + [f"{k} = :{k}" for k in pinned]
+    """一列口径在当前切片下还剩几个取值，各自覆盖几个病。已钉的轴都进 WHERE，
+    所以这是"接着往下选还能选什么"，不是全库清单。
+
+    `year` 不进 WHERE：它是榜取哪一刀的年份，不是切片的轴，而且这一句要报的正是
+    "这一刀跨几年"——按年份过滤完，`year_first` 与 `year_last` 就成同一个值了。
+    """
+    conds = [NOT_REJECTED] + [f"{k} = :{k}" for k in _bind(pinned)]
     return [
         {k: ("" if v is None else v) for k, v in r.items()}
         for r in rows(

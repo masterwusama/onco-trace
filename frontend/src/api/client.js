@@ -17,6 +17,8 @@ export const API_PATHS = [
   '/diseases/{code}/publications',
   '/diseases/{code}/targets',
   '/diseases/{code}/drugs',
+  '/stats/metrics',
+  '/stats/compare',
 ]
 
 // 只发 GET：这台后端只注册了 GET，写方法在它面前是 405，而本站没有任何录入通路。
@@ -26,7 +28,10 @@ export async function get(tpl, params = {}) {
   const qs = new URLSearchParams()
   for (const [k, v] of Object.entries(params)) {
     if (k === 'code') continue
-    if (v === undefined || v === null || v === '') continue
+    // 空串是一个真值，不是"没填"：stat_fact.region 是 NOT NULL DEFAULT ''，
+    // "源没有地区列"就按空串存，榜的 region 轴上它是可取的一项。要不发这个参数
+    // 就别往 params 里放这个键（各面板把"未选"归成 null，正是这个意思）。
+    if (v === undefined || v === null) continue
     qs.set(k, String(v))
   }
   const url = '/api' + path + (qs.toString() ? '?' + qs.toString() : '')

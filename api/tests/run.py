@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""服务层跑测器：拿真库把十四条接口的每个数字对账一遍。
+"""服务层跑测器：拿真库把十五条接口的每个数字对账一遍。
 
     python api/tests/run.py        # 退出码非 0 即有 FAIL（不需要 pytest）
 
@@ -77,7 +77,8 @@ AXES = ("region", "estimate_basis", "sex", "age_band")
 FRONTEND_SRC = ROOT / "frontend" / "src"
 # 后端注册了、前端还没画屏的接口：加一维而不给屏，就得在这里写下一行理由，
 # 否则那道门禁会红——它要的是"没人对着页面核对过的接口"不存在，不是"两边条数相等"。
-BACKEND_ONLY = {"/api/stats/compare": "跨病榜：钉口径那套选择器还没画（D4b 的第一屏）"}
+# D4b 起是空的：十四条疾病页接口 + 榜那一屏把十五条全覆盖了。空不代表这条规则停了。
+BACKEND_ONLY: dict[str, str] = {}
 # 生存率的"串"与路由换一种写法判：同 (病, 档, 年份窗) 里distinct 年份多于一个
 SURV_SERIES = ("(SELECT COUNT(DISTINCT w.year) FROM survival w "
                "WHERE w.disease_id=survival.disease_id AND w.stage=survival.stage "
@@ -154,10 +155,10 @@ def check_guard(c: Checks) -> None:
 # ---------------------------------------------------------------- 路由清单
 def check_routes(c: Checks) -> set[str]:
     paths = set(create_app().openapi()["paths"])
-    c.eq("routes", "D3a+D3b+D3c+D3d 注册的十四条 API 路径", paths,
+    c.eq("routes", "D3a+D3b+D3c+D3d 注册的十五条 API 路径", paths,
          {"/api/meta", "/api/diseases", "/api/diseases/{code}",
           "/api/diseases/{code}/stats", "/api/diseases/{code}/survival",
-          "/api/stats/compare",
+          "/api/stats/metrics", "/api/stats/compare",
           "/api/diseases/{code}/anatomy", "/api/diseases/{code}/histology",
           "/api/diseases/{code}/symptoms", "/api/diseases/{code}/risk-factors",
           "/api/diseases/{code}/trials", "/api/diseases/{code}/publications",
@@ -507,6 +508,43 @@ def check_stats(c: Checks, cl: TestClient, db, ids: dict) -> None:
 
 
 # ---------------------------------------------------------------- 统计层：跨病榜
+def check_metrics(c: Checks, cl: TestClient, db) -> None:
+    """榜那个选择器的料：`/api/stats/metrics` 逐度量与直查对照。
+
+    路由是一条 `GROUP BY metric` 扫全表，这台反过来按名字逐度量单独问——两边同序同名，
+    才说明页面上那份清单真的是 `stat_fact.metric` 的取值，而不是谁抄下来的一份快照。
+    """
+    d = cl.get("/api/stats/metrics").json()
+    want_names = [x["metric"] for x in _q(db, f"SELECT metric FROM stat_fact WHERE {NR}"
+                                             " GROUP BY metric ORDER BY metric")]
+    c.eq("mtr", "度量名与直查同序同名（这份清单就是唯一出处）",
+         [i["metric"] for i in d["items"]], want_names)
+    # 聚合行不是一行事实，挂出处就会让页面把"这一度量有 5,490 行"署给某一行
+    c.eq("mtr", "每个度量项就这些键（聚合层不许挂出处）",
+         {tuple(sorted(i)) for i in d["items"]},
+         {("axes", "diseases", "metric", "rows", "unit",
+           "year_first", "year_last", "year_zero_rows")})
+    c.eq("mtr", "各度量行数相加＝该表非 rejected 行数（没有度量被漏在清单外）",
+         sum(i["rows"] for i in d["items"]),
+         _col(db, f"SELECT COUNT(*) FROM stat_fact WHERE {NR}"))
+    for i in d["items"]:
+        g = f"mtr[{i['metric']}]"
+        r = _q(db, "SELECT COUNT(*) rows_, COUNT(DISTINCT disease_id) dis, SUM(year=0) yz,"
+                   " MIN(NULLIF(year,0)) y0, MAX(NULLIF(year,0)) y1"
+                   f" FROM stat_fact WHERE {NR} AND metric=%s", (i["metric"],))[0]
+        c.eq(g, "行数与覆盖病数", (i["rows"], i["diseases"]), (int(r["rows_"]), int(r["dis"])))
+        c.eq(g, "year=0 单点行数与真实年份跨度（0 不是公元 0 年）",
+             (i["year_zero_rows"], i["year_first"], i["year_last"]),
+             (int(r["yz"] or 0), r["y0"], r["y1"]))
+        us = [x["unit"] for x in _q(db, f"SELECT unit FROM stat_fact WHERE {NR} AND metric=%s"
+                                       " GROUP BY unit ORDER BY unit", (i["metric"],))]
+        c.eq(g, "单位（一根轴才排得成榜；多于一个回数组）",
+             i["unit"], us[0] if len(us) == 1 else us)
+        c.eq(g, "四轴未过滤时各有几个取值", i["axes"],
+             {k: int(_col(db, f"SELECT COUNT(DISTINCT {k}) FROM stat_fact"
+                              f" WHERE {NR} AND metric=%s", (i["metric"],))) for k in AXES})
+
+
 def check_compare(c: Checks, cl: TestClient, db) -> None:
     bad = _q(db, "SELECT metric, region, estimate_basis, sex, age_band, year,"
                  " COUNT(*) AS n, COUNT(DISTINCT disease_id) AS d,"
@@ -613,7 +651,7 @@ def check_compare(c: Checks, cl: TestClient, db) -> None:
     c.eq("cmp", "metric 必填（缺了是 422 不是空榜）", cl.get("/api/stats/compare").status_code, 422)
     r = cl.get("/api/stats/compare", params={"metric": "no_such_metric"})
     c.eq("cmp", "未知度量 404", r.status_code, 404)
-    c.ok("cmp", "404 指路去哪儿找合法值", "/api/meta" in r.json()["detail"])
+    c.ok("cmp", "404 指路去哪儿找合法值", "/api/stats/metrics" in r.json()["detail"])
     r = cl.get("/api/stats/compare", params={"metric": "incidence_asr", "region": "Mars"})
     c.eq("cmp", "口径取值不在该切片内 404", r.status_code, 404)
     c.ok("cmp", "404 回的是该口径实际可取的值", "China" in r.json()["detail"],
@@ -1648,6 +1686,7 @@ def main() -> int:
         check_meta(c, cl, db)
         check_diseases(c, cl, db)
         check_stats(c, cl, db, ids)
+        check_metrics(c, cl, db)
         check_compare(c, cl, db)
         check_survival(c, cl, db, ids)
         check_vocab(c, cl, db, ids)
