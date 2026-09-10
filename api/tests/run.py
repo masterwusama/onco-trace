@@ -155,14 +155,17 @@ def check_guard(c: Checks) -> None:
 # ---------------------------------------------------------------- 路由清单
 def check_routes(c: Checks) -> set[str]:
     paths = set(create_app().openapi()["paths"])
-    c.eq("routes", "D3a+D3b+D3c+D3d 注册的十五条 API 路径", paths,
+    c.eq("routes", "D3a+D3b+D3c+D3d+D3e 注册的二十条 API 路径", paths,
          {"/api/meta", "/api/diseases", "/api/diseases/{code}",
           "/api/diseases/{code}/stats", "/api/diseases/{code}/survival",
           "/api/stats/metrics", "/api/stats/compare",
           "/api/diseases/{code}/anatomy", "/api/diseases/{code}/histology",
           "/api/diseases/{code}/symptoms", "/api/diseases/{code}/risk-factors",
           "/api/diseases/{code}/trials", "/api/diseases/{code}/publications",
-          "/api/diseases/{code}/targets", "/api/diseases/{code}/drugs"})
+          "/api/diseases/{code}/targets", "/api/diseases/{code}/drugs",
+          "/api/anatomy/{node_id}/diseases", "/api/symptoms/{name}/diseases",
+          "/api/risk-factors/{factor_id}/diseases", "/api/targets/{ot_id}/diseases",
+          "/api/drugs/{drug_id}/diseases"})
 
     # 解码表按 db/schema.sql 数，不靠人记：漏一列，那一列就以 "[…]" 字符串回到前端
     from onco_api.serialize import JSON_COLS
@@ -203,13 +206,13 @@ def check_frontend(c: Checks, paths: set[str]) -> None:
     c.ok("web", "清单里每一条都是后端真注册的路径", not unknown, f"多余：{unknown}")
     c.eq("web", "清单自身不重复", sorted(set(listed)), sorted(listed))
 
-    # 字面量扫描：只认像后端路径的那几种开头（'/disease/' 是前端路由，不算）
+    # 字面量扫描：只认像后端路径的那几种开头（'/disease/' 与 '/reverse/' 是前端路由，不算）
     used: set[str] = set()
     strays: list[str] = []
     for f in sorted(src.rglob("*")):
         if f.suffix not in (".js", ".vue") or not f.is_file():
             continue
-        for lit in re.findall(r"['`](/(?:api|diseases|stats|meta)[^'`]*)['`]",
+        for lit in re.findall(r"['`](/(?:api|diseases|stats|meta|anatomy|symptoms|risk-factors|targets|drugs)[^'`]*)['`]",
                               f.read_text(encoding="utf-8")):
             if lit == "/api":  # client.js 拼接用的前缀，不是一条路径
                 continue
@@ -1631,6 +1634,123 @@ def check_gaps(c: Checks, cl: TestClient, db) -> None:
          [("basis", "dim", "label", "scope", "text")])
 
 
+# ---------------------------------------------------------------- 反查
+def check_reverse(c: Checks, cl: TestClient, db, ids: dict[str, int]) -> None:
+    """五路反查：从实体出发取疾病列表，与正向页走同一份库、同一道过滤。
+
+    每一路都先拿正向页的一个真实实体做反查，再拿直查 SQL 的结果对账——
+    疾病集合必须完全相等（不只是条数），否则就是反查漏了或多了一个病。
+    404 的提示也必须给出可取值的样本，不能只回一句"找不到"。
+    """
+    g = "rev"
+
+    # ---- anatomy reverse ----
+    node = _one(db, "SELECT id FROM anatomy_node WHERE kind='site_recode' LIMIT 1")
+    if node:
+        nid = node["id"]
+        r = cl.get(f"/api/anatomy/{nid}/diseases")
+        c.eq(g, f"anatomy/{nid} HTTP 200", r.status_code, 200)
+        d = r.json()
+        want_codes = sorted({r["code"] for r in _q(
+            db, "SELECT d.code FROM disease_anatomy m JOIN disease d ON d.id = m.disease_id"
+                " WHERE m.anatomy_node_id = %s", (nid,))})
+        got_codes = sorted(x["code"] for x in d["diseases"])
+        c.eq(g, f"anatomy/{nid} 疾病集合与直查一致", got_codes, want_codes)
+        c.eq(g, f"anatomy/{nid} n_diseases 与列表等长", d["n_diseases"], len(d["diseases"]))
+
+    r = cl.get("/api/anatomy/999999/diseases")
+    c.eq(g, "anatomy 不存在时 404", r.status_code, 404)
+    c.ok(g, "anatomy 404 提示含全库节点数", "全库共" in r.json().get("detail", ""))
+
+    # ---- symptom reverse ----
+    sym = _one(db, "SELECT name, name_lang FROM symptom"
+                   f" WHERE review_status<>'rejected' AND name_lang='en' LIMIT 1")
+    if sym:
+        from urllib.parse import quote
+        name, lang = sym["name"], sym["name_lang"]
+        r = cl.get(f"/api/symptoms/{quote(name)}/diseases?lang={lang}")
+        c.eq(g, f"symptoms/{name!r} HTTP 200", r.status_code, 200)
+        d = r.json()
+        want_codes = sorted({r["code"] for r in _q(
+            db, "SELECT d.code FROM symptom s JOIN disease d ON d.id = s.disease_id"
+                f" WHERE s.name = %s AND s.name_lang = %s AND s.{NR}", (name, lang))})
+        got_codes = sorted(x["code"] for x in d["diseases"])
+        c.eq(g, f"symptoms/{name!r} 疾病集合与直查一致", got_codes, want_codes)
+        c.ok(g, f"symptoms/{name!r} 按源分块", len(d.get("sources", [])) >= 1)
+
+    r = cl.get("/api/symptoms/ZZZZNOTEXIST/diseases?lang=en")
+    c.eq(g, "symptoms 不存在时 404", r.status_code, 404)
+    c.ok(g, "symptoms 404 提示含前 8 个可取值", "前 8 个" in r.json().get("detail", ""))
+
+    r = cl.get("/api/symptoms/test/diseases?lang=fr")
+    c.eq(g, "symptoms lang=fr 被拒", r.status_code, 400)
+
+    # ---- risk-factor reverse ----
+    rf = _one(db, "SELECT id, kind FROM risk_factor LIMIT 1")
+    if rf:
+        fid = rf["id"]
+        r = cl.get(f"/api/risk-factors/{fid}/diseases")
+        c.eq(g, f"risk-factors/{fid} HTTP 200", r.status_code, 200)
+        d = r.json()
+        # 直查 genetic 与 exposure 两层的疾病集合
+        want_gen = sorted({r["code"] for r in _q(
+            db, "SELECT d.code FROM disease_risk_factor a JOIN disease d ON d.id = a.disease_id"
+                " WHERE a.risk_factor_id = %s AND a.role = 'genetic'", (fid,))})
+        want_exp = sorted({r["code"] for r in _q(
+            db, "SELECT d.code FROM disease_risk_factor a JOIN disease d ON d.id = a.disease_id"
+                " WHERE a.risk_factor_id = %s AND a.role = 'exposure'", (fid,))})
+        got_gen = sorted(x["code"] for x in d["genetic"])
+        got_exp = sorted(x["code"] for x in d["exposure"])
+        c.eq(g, f"risk-factors/{fid} genetic 疾病集合一致", got_gen, want_gen)
+        c.eq(g, f"risk-factors/{fid} exposure 疾病集合一致", got_exp, want_exp)
+
+    r = cl.get("/api/risk-factors/999999/diseases")
+    c.eq(g, "risk-factors 不存在时 404", r.status_code, 404)
+    c.ok(g, "risk-factors 404 提示含全库数", "全库共" in r.json().get("detail", ""))
+
+    # ---- target reverse ----
+    tgt = _one(db, "SELECT ot_id, id FROM target LIMIT 1")
+    if tgt:
+        ot_id = tgt["ot_id"]
+        r = cl.get(f"/api/targets/{ot_id}/diseases")
+        c.eq(g, f"targets/{ot_id} HTTP 200", r.status_code, 200)
+        d = r.json()
+        want_codes = sorted({r["code"] for r in _q(
+            db, "SELECT d.code FROM disease_target dt"
+                " JOIN target t ON t.id = dt.target_id"
+                f" JOIN disease d ON d.id = dt.disease_id"
+                f" WHERE t.ot_id = %s AND dt.{NR}", (ot_id,))})
+        got_codes = sorted(x["code"] for x in d["diseases"])
+        c.eq(g, f"targets/{ot_id} 疾病集合与直查一致", got_codes, want_codes)
+        # 每一病都带合成分
+        c.ok(g, f"targets/{ot_id} 每病带 score",
+             all("score" in x for x in d["diseases"]))
+
+    r = cl.get("/api/targets/ENSG_NOT_REAL/diseases")
+    c.eq(g, "targets 不存在时 404", r.status_code, 404)
+    c.ok(g, "targets 404 提示含前 5 个 ot_id", "前 5 个" in r.json().get("detail", ""))
+
+    # ---- drug reverse ----
+    drg = _one(db, f"SELECT DISTINCT drug_id FROM drug WHERE {NR} AND drug_id <> '' LIMIT 1")
+    if drg:
+        drug_id = drg["drug_id"]
+        r = cl.get(f"/api/drugs/{drug_id}/diseases")
+        c.eq(g, f"drugs/{drug_id} HTTP 200", r.status_code, 200)
+        d = r.json()
+        want_codes = sorted({r["code"] for r in _q(
+            db, f"SELECT d.code FROM drug dr JOIN disease d ON d.id = dr.disease_id"
+                f" WHERE dr.drug_id = %s AND dr.{NR}", (drug_id,))})
+        got_codes = sorted(x["code"] for x in d["diseases"])
+        c.eq(g, f"drugs/{drug_id} 疾病集合与直查一致", got_codes, want_codes)
+        # 每一病都带 entries
+        c.ok(g, f"drugs/{drug_id} 每病带 entries",
+             all("entries" in x for x in d["diseases"]))
+
+    r = cl.get("/api/drugs/CHEMBL_NOT_REAL/diseases")
+    c.eq(g, "drugs 不存在时 404", r.status_code, 404)
+    c.ok(g, "drugs 404 提示含前 5 个 drug_id", "前 5 个" in r.json().get("detail", ""))
+
+
 # ---------------------------------------------------------------- 边界
 def check_edges(c: Checks, cl: TestClient) -> None:
     c.eq("edges", "limit=0 被拒", cl.get("/api/diseases", params={"limit": 0}).status_code, 422)
@@ -1696,6 +1816,7 @@ def main() -> int:
         except Exception as e:  # noqa: BLE001 结果攒到最后才打印，这里不兜住就等于整份报告没了
             c.ok("resX", "分页边界那一台整台跑完（没抛异常）", False, f"{type(e).__name__}: {e}")
         check_gaps(c, cl, db)
+        check_reverse(c, cl, db, ids)
         check_edges(c, cl)
         event.remove(apidb.engine(), "before_cursor_execute", _tap)
         check_sql_filter(c, seen)

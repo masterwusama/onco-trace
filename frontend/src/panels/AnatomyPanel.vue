@@ -36,6 +36,8 @@ function codesOf(row) {
           {{ text(row.label) }}
           <em v-if="row.label_zh">{{ row.label_zh }}</em>
           <span class="badge">{{ text(row.kind) }}</span>
+          <RouterLink :to="{ name: 'reverse-anatomy', params: { node_id: row.id } }"
+                      class="rev mono small" title="反查：这个节点挂在哪些病上">反查</RouterLink>
         </div>
         <div class="codes mono">
           code {{ text(row.code) }}

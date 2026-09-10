@@ -55,7 +55,11 @@ function url(item) {
         <table class="grid tight">
           <tbody>
             <tr v-for="it in g.items" :key="it.id">
-              <td class="wide">{{ text(it.name) }}</td>
+              <td class="wide">
+                {{ text(it.name) }}
+                <RouterLink :to="{ name: 'reverse-symptom', params: { name: it.name }, query: { lang: b.name_lang } }"
+                            class="rev mono small" title="反查：这个症状挂在哪些病上">反查</RouterLink>
+              </td>
               <td style="width: 90px">
                 <span v-if="it.freq_band" class="badge">{{ it.freq_band }}</span>
                 <span v-else class="nil" title="freq_band 建而不填">—</span>

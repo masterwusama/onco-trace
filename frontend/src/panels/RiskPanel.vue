@@ -67,7 +67,11 @@ function pmi(id) {
         </thead>
         <tbody>
           <tr v-for="r in genetic.items" :key="r.id">
-            <td>{{ text(r.factor?.label) }}<em v-if="r.factor?.label_zh" class="muted"> / {{ r.factor.label_zh }}</em></td>
+            <td>
+              {{ text(r.factor?.label) }}<em v-if="r.factor?.label_zh" class="muted"> / {{ r.factor.label_zh }}</em>
+              <RouterLink v-if="r.factor?.id" :to="{ name: 'reverse-risk', params: { factor_id: r.factor.id } }"
+                          class="rev mono small" title="反查：这个危险因素关联哪几个病">反查</RouterLink>
+            </td>
             <td class="mono trunc" :title="String(r.snps)">{{ text(r.snps) }}</td>
             <td class="mono">{{ text(r.risk_allele) }}</td>
             <td class="mono">{{ r.chr_id ? r.chr_id + ':' + text(r.chr_pos) : '—' }}</td>
@@ -100,7 +104,11 @@ function pmi(id) {
         </thead>
         <tbody>
           <tr v-for="r in exposure.items" :key="r.id">
-            <td>{{ text(r.factor?.label) }}<em v-if="r.factor?.label_zh" class="muted"> / {{ r.factor.label_zh }}</em></td>
+            <td>
+              {{ text(r.factor?.label) }}<em v-if="r.factor?.label_zh" class="muted"> / {{ r.factor.label_zh }}</em>
+              <RouterLink v-if="r.factor?.id" :to="{ name: 'reverse-risk', params: { factor_id: r.factor.id } }"
+                          class="rev mono small" title="反查：这个危险因素关联哪几个病">反查</RouterLink>
+            </td>
             <td class="mono">{{ text(r.factor?.kind) }}</td>
             <td class="trunc" :title="String(r.trait_label)">{{ text(r.trait_label) }}</td>
             <td class="mono small">{{ text(r.trait_uri) }}</td>

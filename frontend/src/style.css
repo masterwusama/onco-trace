@@ -34,6 +34,8 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 .muted { color: var(--sub); }
 .nil { color: var(--sub); }
 .emptyp { color: var(--sub); font-style: italic; }
+.rev { color: #888; text-decoration: none; margin-left: 6px; font-size: 11px; border: 1px solid #ddd; border-radius: 3px; padding: 0 4px; }
+.rev:hover { color: #0066cc; border-color: #0066cc; }
 
 /* ── 站点头尾 ─────────────────────────────────────────────── */
 .top {

@@ -78,6 +78,15 @@ const rows = computed(() => data.value?.items || [])
 const filters = computed(() => data.value?.filters || {})
 const hit = computed(() => data.value?.source_hit || null)
 const page = computed(() => data.value?.page || { limit: 50, offset: 0, total_rows: 0, returned: 0, has_more: false })
+
+function reverseLink(row) {
+  if (props.dim === 'targets' && row.ot_id)
+    return { name: 'reverse-target', params: { ot_id: row.ot_id } }
+  if (props.dim === 'drugs' && row.drug_id)
+    return { name: 'reverse-drug', params: { drug_id: row.drug_id } }
+  return null
+}
+const hasReverse = computed(() => props.dim === 'targets' || props.dim === 'drugs')
 </script>
 
 <template>
@@ -115,6 +124,7 @@ const page = computed(() => data.value?.page || { limit: 50, offset: 0, total_ro
       <thead>
         <tr>
           <th v-if="cfg.link"></th>
+          <th v-if="hasReverse"></th>
           <th v-for="c in cfg.cols" :key="c.k">{{ c.label }}</th>
           <th></th>
         </tr>
@@ -124,6 +134,9 @@ const page = computed(() => data.value?.page || { limit: 50, offset: 0, total_ro
           <tr :class="{ open: opened.has(i) }">
             <td v-if="cfg.link" class="ext">
               <a v-if="cfg.link(row)" :href="cfg.link(row)" target="_blank" rel="noopener">↗</a>
+            </td>
+            <td v-if="hasReverse" class="ext">
+              <RouterLink v-if="reverseLink(row)" :to="reverseLink(row)" class="rev mono small" title="反查">反查</RouterLink>
             </td>
             <td v-for="c in cfg.cols" :key="c.k" :class="['t-' + (c.type || 'text'), { wide: c.type === 'wide' }]">
               <ProvenanceTag v-if="c.type === 'prov'" :prov="row.provenance" />
@@ -137,7 +150,7 @@ const page = computed(() => data.value?.page || { limit: 50, offset: 0, total_ro
             </td>
           </tr>
           <tr v-if="opened.has(i)" class="detail">
-            <td :colspan="cfg.cols.length + (cfg.link ? 2 : 1)">
+            <td :colspan="cfg.cols.length + (cfg.link ? 1 : 0) + (hasReverse ? 1 : 0) + 1">
               <dl>
                 <template v-for="k in (cfg.expand || []).concat(extraKeys(row))" :key="k">
                   <dt>{{ k }}</dt>
@@ -148,7 +161,7 @@ const page = computed(() => data.value?.page || { limit: 50, offset: 0, total_ro
           </tr>
         </template>
         <tr v-if="!rows.length && page.total_rows > 0">
-          <td :colspan="cfg.cols.length + (cfg.link ? 2 : 1)" class="empty">
+          <td :colspan="cfg.cols.length + (cfg.link ? 1 : 0) + (hasReverse ? 1 : 0) + 1" class="empty">
             offset {{ page.offset }} 越界：整维共 {{ num(page.total_rows) }} 行，这一刀在表外，接口回的是空页
           </td>
         </tr>
